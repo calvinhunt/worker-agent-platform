@@ -10,47 +10,44 @@ export const runtime = "nodejs";
 
 type CreateTaskBody = {
   name?: string;
-  instructions?: string;
-  contextSetId?: string;
-  skillIds?: string[];
+  agentId?: string;
 };
 
 export async function POST(request: Request) {
   const body = (await request.json()) as CreateTaskBody;
-  const instructions = String(body.instructions || "").trim();
-  const contextSetId = String(body.contextSetId || "").trim();
   const requestedName = String(body.name || "").trim();
-  const skillIds = (body.skillIds || []).map((entry) => String(entry));
+  const agentId = String(body.agentId || "").trim();
 
-  if (!instructions) {
-    return NextResponse.json({ error: "Agent instructions are required." }, { status: 400 });
-  }
-
-  if (!contextSetId) {
-    return NextResponse.json({ error: "Context set selection is required." }, { status: 400 });
+  if (!agentId) {
+    return NextResponse.json({ error: "Agent selection is required." }, { status: 400 });
   }
 
   const store = await readStore();
-  const contextSet = store.contextSets.find((entry) => entry.id === contextSetId);
+  const agent = store.agents.find((entry) => entry.id === agentId);
+
+  if (!agent) {
+    return NextResponse.json({ error: "Agent not found." }, { status: 404 });
+  }
+
+  const contextSet = store.contextSets.find((entry) => entry.id === agent.contextSetId);
 
   if (!contextSet) {
-    return NextResponse.json({ error: "Context set not found." }, { status: 404 });
+    return NextResponse.json({ error: "The agent context set was not found." }, { status: 404 });
   }
 
   const name =
     requestedName ||
     (await suggestTaskTitle({
-      instructions,
+      agentName: agent.name,
+      instructions: agent.instructions,
       contextSetName: contextSet.name,
     }));
 
   const timestamp = new Date().toISOString();
   const task: Task = {
     id: randomUUID(),
+    agentId,
     name,
-    instructions,
-    contextSetId,
-    skillIds,
     messages: [],
     artifacts: [],
     status: "idle",

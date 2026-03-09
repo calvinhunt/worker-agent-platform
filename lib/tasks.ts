@@ -8,7 +8,7 @@ import { toFile } from "openai";
 
 import { getOpenAIClient } from "@/lib/openai";
 import { readStore, writeStore } from "@/lib/store";
-import type { ContextSet, SkillBundle, Task, TaskArtifact, TaskMessage, TaskStatus } from "@/lib/types";
+import type { Agent, ContextSet, SkillBundle, Task, TaskArtifact, TaskMessage, TaskStatus } from "@/lib/types";
 
 function nowIso() {
   return new Date().toISOString();
@@ -37,13 +37,19 @@ export async function ensureTaskReady(
     throw new Error("Task not found.");
   }
 
-  const contextSet = store.contextSets.find((entry) => entry.id === task.contextSetId);
+  const agent = store.agents.find((entry) => entry.id === task.agentId);
+
+  if (!agent) {
+    throw new Error("Agent not found.");
+  }
+
+  const contextSet = store.contextSets.find((entry) => entry.id === agent.contextSetId);
 
   if (!contextSet) {
     throw new Error("Context set not found.");
   }
 
-  const skills = store.skills.filter((entry) => task.skillIds.includes(entry.id));
+  const skills = store.skills.filter((entry) => agent.skillIds.includes(entry.id));
 
   if (contextSet.openaiFileIds.length !== contextSet.files.length) {
     const uploadedFileIds: string[] = [];
@@ -110,6 +116,7 @@ export async function ensureTaskReady(
   await writeStore(store);
 
   return {
+    agent,
     task,
     contextSet,
     skills,
@@ -350,17 +357,20 @@ export async function setTaskStatus(taskId: string, status: TaskStatus) {
   return task;
 }
 
-export function buildAgentInstructions(task: Task, contextSet: ContextSet) {
+export function buildAgentInstructions(task: Task, agent: Agent, contextSet: ContextSet) {
   return [
     "You are operating inside an OpenAI hosted shell container.",
+    `The active agent is "${agent.name}".`,
     `The active context set is "${contextSet.name}". Read the uploaded files before doing substantive work.`,
     "Use the shell tool when you need to inspect or transform files.",
     "Provide regular progress updates as you work.",
     "Write any user-downloadable deliverables into /mnt/data.",
     "At the end, summarize the outcome and mention the most important /mnt/data paths.",
     "",
-    "Task-specific instructions:",
-    task.instructions,
+    "Agent instructions:",
+    agent.instructions,
+    "",
+    `Current task: ${task.name}`,
   ].join("\n");
 }
 

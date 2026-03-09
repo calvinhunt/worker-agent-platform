@@ -1,16 +1,70 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { AppStore } from "@/lib/types";
+import type { Agent, AppStore, Task } from "@/lib/types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const STORE_PATH = path.join(DATA_DIR, "store.json");
 
 const EMPTY_STORE: AppStore = {
+  agents: [],
   contextSets: [],
   skills: [],
   tasks: [],
 };
+
+type LegacyTask = Task & {
+  instructions?: string;
+  contextSetId?: string;
+  skillIds?: string[];
+  agentId?: string;
+};
+
+function normalizeStore(parsed: Partial<AppStore>) {
+  const agents = [...(parsed.agents ?? [])];
+  const tasks = (parsed.tasks ?? []).map((entry) => entry as LegacyTask);
+  const agentIds = new Set(agents.map((agent) => agent.id));
+
+  const normalizedTasks = tasks.map((task) => {
+    const agentId = task.agentId || `legacy-agent-${task.id}`;
+
+    if (!agentIds.has(agentId)) {
+      const legacyAgent: Agent = {
+        id: agentId || randomUUID(),
+        name: task.name || "Migrated agent",
+        instructions: task.instructions || "Migrated from the earlier task-first layout.",
+        contextSetId: task.contextSetId || "",
+        skillIds: task.skillIds ?? [],
+        createdAt: task.createdAt,
+        updatedAt: task.updatedAt,
+      };
+
+      agents.push(legacyAgent);
+      agentIds.add(legacyAgent.id);
+    }
+
+    return {
+      id: task.id,
+      agentId,
+      name: task.name,
+      containerId: task.containerId,
+      lastResponseId: task.lastResponseId,
+      messages: task.messages ?? [],
+      artifacts: task.artifacts ?? [],
+      status: task.status ?? "idle",
+      createdAt: task.createdAt,
+      updatedAt: task.updatedAt,
+    } satisfies Task;
+  });
+
+  return {
+    agents,
+    contextSets: parsed.contextSets ?? [],
+    skills: parsed.skills ?? [],
+    tasks: normalizedTasks,
+  } satisfies AppStore;
+}
 
 async function ensureStoreFile() {
   await mkdir(DATA_DIR, { recursive: true });
@@ -28,12 +82,7 @@ export async function readStore(): Promise<AppStore> {
 
   try {
     const parsed = JSON.parse(raw) as Partial<AppStore>;
-
-    return {
-      contextSets: parsed.contextSets ?? [],
-      skills: parsed.skills ?? [],
-      tasks: parsed.tasks ?? [],
-    };
+    return normalizeStore(parsed);
   } catch {
     return EMPTY_STORE;
   }

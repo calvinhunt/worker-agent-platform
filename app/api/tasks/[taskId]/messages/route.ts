@@ -49,7 +49,7 @@ export async function POST(
         await setTaskStatus(taskId, "running");
         write({ type: "status", status: "running" });
 
-        const { task, contextSet } = await ensureTaskReady(taskId);
+        const { task, agent, contextSet } = await ensureTaskReady(taskId);
         write({
           type: "update",
           message: task.containerId
@@ -63,7 +63,7 @@ export async function POST(
           store: true,
           input: prompt,
           previous_response_id: task.lastResponseId,
-          instructions: buildAgentInstructions(task, contextSet),
+          instructions: buildAgentInstructions(task, agent, contextSet),
           tools: [
             {
               type: "shell",

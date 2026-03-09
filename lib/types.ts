@@ -45,12 +45,20 @@ export type TaskArtifact = {
 
 export type TaskStatus = "idle" | "running" | "completed" | "failed";
 
-export type Task = {
+export type Agent = {
   id: string;
   name: string;
   instructions: string;
   contextSetId: string;
   skillIds: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Task = {
+  id: string;
+  agentId: string;
+  name: string;
   containerId?: string;
   lastResponseId?: string;
   messages: TaskMessage[];
@@ -61,6 +69,7 @@ export type Task = {
 };
 
 export type AppStore = {
+  agents: Agent[];
   contextSets: ContextSet[];
   skills: SkillBundle[];
   tasks: Task[];
