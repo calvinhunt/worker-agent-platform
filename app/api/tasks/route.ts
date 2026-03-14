@@ -44,12 +44,15 @@ export async function POST(request: Request) {
     }));
 
   const timestamp = new Date().toISOString();
+  const taskId = randomUUID();
   const task: Task = {
-    id: randomUUID(),
+    id: taskId,
     agentId,
     name,
+    sessionId: taskId,
     messages: [],
     artifacts: [],
+    runs: [],
     status: "idle",
     createdAt: timestamp,
     updatedAt: timestamp,

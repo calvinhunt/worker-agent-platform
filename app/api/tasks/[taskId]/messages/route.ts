@@ -1,14 +1,13 @@
 import { NextResponse } from "next/server";
 
-import { getDefaultModel, getOpenAIClient } from "@/lib/openai";
+import { generateTraceId } from "@openai/agents";
+
+import { streamKnowledgeTask } from "@/lib/task-runtime";
 import {
   buildAgentInstructions,
-  cacheTaskArtifacts,
   ensureTaskReady,
-  extractArtifactsFromResponse,
-  listTaskArtifacts,
-  mergeArtifacts,
   setTaskStatus,
+  startTaskRun,
   syncTaskArtifacts,
   summarizeShellOutput,
   updateTaskAfterRun,
@@ -44,57 +43,75 @@ export async function POST(
         controller.enqueue(encoder.encode(streamLine(payload)));
       };
       let assistantDraft = "";
+      let runId: string | undefined;
+      const traceId = generateTraceId();
 
       try {
-        await setTaskStatus(taskId, "running");
+        const { run } = await startTaskRun(taskId, { traceId });
+        runId = run.id;
         write({ type: "status", status: "running" });
 
-        const { task, agent, contextSet } = await ensureTaskReady(taskId);
+        const { task, agent, contextSet, containerWasCreated, containerWasReset } =
+          await ensureTaskReady(taskId);
         write({
           type: "update",
-          message: task.containerId
-            ? `Using container ${task.containerId}`
-            : "Preparing hosted container",
+          message: containerWasReset
+            ? `Hosted container expired. Recreated container ${task.containerId}.`
+            : containerWasCreated
+              ? `Prepared hosted container ${task.containerId}.`
+              : `Using container ${task.containerId}`,
         });
 
-        const client = getOpenAIClient();
-        const responseStream = client.responses.stream({
-          model: getDefaultModel(),
-          store: true,
-          input: prompt,
-          previous_response_id: task.lastResponseId,
-          instructions: buildAgentInstructions(task, agent, contextSet),
-          tools: [
-            {
-              type: "shell",
-              environment: {
-                type: "container_reference",
-                container_id: task.containerId!,
-              },
-            },
-          ],
-          text: {
-            verbosity: "medium",
-          },
-        });
+        const { finalOutput, responseId } = await streamKnowledgeTask({
+          taskId,
+          agentId: agent.id,
+          agentName: agent.name,
+          sessionId: task.sessionId,
+          containerId: task.containerId!,
+          instructions: buildAgentInstructions(task, agent, contextSet, {
+            containerWasReset,
+          }),
+          prompt,
+          traceId,
+          onEvent(event) {
+            if (event.type === "raw_model_stream_event") {
+              switch (event.data.type) {
+                case "output_text_delta":
+                  assistantDraft += event.data.delta;
+                  write({ type: "assistant_delta", delta: event.data.delta });
+                  break;
+                case "response_done":
+                  write({
+                    type: "update",
+                    message: "Model response completed. Gathering /mnt/data artifacts.",
+                  });
+                  break;
+                default:
+                  break;
+              }
 
-        for await (const event of responseStream) {
-          switch (event.type) {
-            case "response.output_text.delta":
-              assistantDraft += event.delta;
-              write({ type: "assistant_delta", delta: event.delta });
-              break;
-            case "response.output_item.added":
-              if (event.item.type === "shell_call") {
+              return;
+            }
+
+            if (event.type === "run_item_stream_event") {
+              if (
+                event.name === "tool_called" &&
+                event.item.type === "tool_call_item" &&
+                event.item.rawItem?.type === "shell_call"
+              ) {
                 write({
                   type: "update",
-                  message: `Running shell step: ${event.item.action.commands.join(" && ")}`,
+                  message: `Running shell step: ${event.item.rawItem.action.commands.join(" && ")}`,
                 });
+                return;
               }
-              break;
-            case "response.output_item.done":
-              if (event.item.type === "shell_call_output") {
-                const summary = summarizeShellOutput(event.item.output);
+
+              if (
+                event.name === "tool_output" &&
+                event.item.type === "tool_call_output_item" &&
+                event.item.rawItem?.type === "shell_call_output"
+              ) {
+                const summary = summarizeShellOutput(event.item.rawItem.output);
                 if (summary) {
                   write({
                     type: "shell_output",
@@ -102,44 +119,15 @@ export async function POST(
                   });
                 }
               }
-              break;
-            case "response.completed":
-              write({
-                type: "update",
-                message: "Model response completed. Gathering /mnt/data artifacts.",
-              });
-              break;
-            case "response.failed":
-              write({
-                type: "error",
-                message: event.response.error?.message || "The model response failed.",
-              });
-              break;
-            default:
-              break;
-          }
-        }
+            }
+          },
+        });
 
-        const finalResponse = await responseStream.finalResponse();
-        const assistantText =
-          finalResponse.output_text || assistantDraft || "Completed without a final text response.";
-        let artifacts = extractArtifactsFromResponse(finalResponse);
+        const assistantText = finalOutput || assistantDraft || "Completed without a final text response.";
+        let cachedArtifacts = task.artifacts;
 
         try {
-          const listedArtifacts = await listTaskArtifacts(taskId);
-          artifacts = mergeArtifacts(artifacts, listedArtifacts);
-        } catch (error) {
-          console.error("Artifact list failed:", error);
-          write({
-            type: "update",
-            message: "Artifact listing from the container failed; using response annotations instead.",
-          });
-        }
-
-        let cachedArtifacts = artifacts;
-
-        try {
-          cachedArtifacts = await cacheTaskArtifacts(taskId, task.containerId!, artifacts);
+          cachedArtifacts = await syncTaskArtifacts(taskId);
         } catch (error) {
           console.error("Artifact cache failed:", error);
           write({
@@ -152,14 +140,16 @@ export async function POST(
           taskId,
           prompt,
           assistantText,
-          responseId: finalResponse.id,
+          responseId,
+          traceId,
+          runId,
           status: "completed",
           artifacts: cachedArtifacts,
         });
 
         write({
           type: "done",
-          responseId: finalResponse.id,
+          responseId,
           assistantText,
           artifacts: cachedArtifacts,
         });
@@ -185,6 +175,8 @@ export async function POST(
             taskId,
             prompt,
             assistantText: assistantDraft || `The run ended with an error: ${message}`,
+            traceId,
+            runId,
             status: "failed",
             artifacts: recoveredArtifacts,
           });
@@ -195,7 +187,7 @@ export async function POST(
 
         try {
           if (!failurePersisted) {
-            await setTaskStatus(taskId, "failed");
+            await setTaskStatus(taskId, "failed", { traceId });
           }
         } catch {
           // Best effort only.

@@ -8,7 +8,16 @@ import { toFile } from "openai";
 
 import { getOpenAIClient } from "@/lib/openai";
 import { readStore, writeStore } from "@/lib/store";
-import type { Agent, ContextSet, SkillBundle, Task, TaskArtifact, TaskMessage, TaskStatus } from "@/lib/types";
+import type {
+  Agent,
+  ContextSet,
+  SkillBundle,
+  Task,
+  TaskArtifact,
+  TaskMessage,
+  TaskRun,
+  TaskStatus,
+} from "@/lib/types";
 
 function nowIso() {
   return new Date().toISOString();
@@ -80,11 +89,18 @@ export async function ensureTaskReady(
     skill.updatedAt = nowIso();
   }
 
-  if (!options?.forceNewContainer && task.containerId) {
+  const existingContainerId = task.containerId;
+  let containerWasReset = false;
+
+  if (options?.forceNewContainer && task.containerId) {
+    task.containerId = undefined;
+    containerWasReset = true;
+  } else if (task.containerId) {
     try {
       await client.containers.retrieve(task.containerId);
     } catch {
       task.containerId = undefined;
+      containerWasReset = true;
     }
   }
 
@@ -120,6 +136,8 @@ export async function ensureTaskReady(
     task,
     contextSet,
     skills,
+    containerWasCreated: task.containerId !== existingContainerId,
+    containerWasReset,
   };
 }
 
@@ -304,6 +322,8 @@ export async function updateTaskAfterRun(input: {
   prompt: string;
   assistantText: string;
   responseId?: string;
+  traceId?: string;
+  runId?: string;
   status: TaskStatus;
   artifacts: TaskArtifact[];
 }) {
@@ -333,16 +353,61 @@ export async function updateTaskAfterRun(input: {
 
   task.messages.push(...messages);
   task.lastResponseId = input.responseId;
+  task.lastTraceId = input.traceId ?? task.lastTraceId;
   task.status = input.status;
   task.artifacts = filterDownloadableArtifacts(input.artifacts);
   task.updatedAt = nowIso();
+
+  const activeRun = findTaskRun(task, input.runId);
+  const completedAt = nowIso();
+
+  if (activeRun) {
+    activeRun.completedAt = completedAt;
+    activeRun.responseId = input.responseId ?? activeRun.responseId;
+    activeRun.traceId = input.traceId ?? activeRun.traceId;
+    activeRun.status = input.status === "failed" ? "failed" : "completed";
+  } else if (input.status !== "idle") {
+    task.runs.unshift({
+      id: randomUUID(),
+      startedAt: createdAt,
+      completedAt,
+      responseId: input.responseId,
+      traceId: input.traceId,
+      status: input.status === "failed" ? "failed" : "completed",
+    });
+  }
 
   await writeStore(store);
 
   return task;
 }
 
-export async function setTaskStatus(taskId: string, status: TaskStatus) {
+export async function startTaskRun(taskId: string, options?: { traceId?: string }) {
+  const store = await readStore();
+  const task = store.tasks.find((entry) => entry.id === taskId);
+
+  if (!task) {
+    throw new Error("Task not found.");
+  }
+
+  const run: TaskRun = {
+    id: randomUUID(),
+    startedAt: nowIso(),
+    traceId: options?.traceId,
+    status: "running",
+  };
+
+  task.status = "running";
+  task.lastTraceId = options?.traceId ?? task.lastTraceId;
+  task.runs.unshift(run);
+  task.updatedAt = nowIso();
+
+  await writeStore(store);
+
+  return { task, run };
+}
+
+export async function setTaskStatus(taskId: string, status: TaskStatus, options?: { traceId?: string }) {
   const store = await readStore();
   const task = store.tasks.find((entry) => entry.id === taskId);
 
@@ -351,17 +416,43 @@ export async function setTaskStatus(taskId: string, status: TaskStatus) {
   }
 
   task.status = status;
+  task.lastTraceId = options?.traceId ?? task.lastTraceId;
+  if (status !== "running" && status !== "idle") {
+    const activeRun = findTaskRun(task);
+
+    if (activeRun) {
+      activeRun.completedAt = activeRun.completedAt ?? nowIso();
+      activeRun.traceId = options?.traceId ?? activeRun.traceId;
+      activeRun.status = status === "failed" ? "failed" : "completed";
+    }
+  }
   task.updatedAt = nowIso();
   await writeStore(store);
 
   return task;
 }
 
-export function buildAgentInstructions(task: Task, agent: Agent, contextSet: ContextSet) {
+function findTaskRun(task: Task, runId?: string) {
+  if (runId) {
+    return task.runs.find((run) => run.id === runId);
+  }
+
+  return task.runs.find((run) => run.status === "running" && !run.completedAt);
+}
+
+export function buildAgentInstructions(
+  task: Task,
+  agent: Agent,
+  contextSet: ContextSet,
+  options?: { containerWasReset?: boolean },
+) {
   return [
     "You are operating inside an OpenAI hosted shell container.",
     `The active agent is "${agent.name}".`,
     `The active context set is "${contextSet.name}". Read the uploaded files before doing substantive work.`,
+    options?.containerWasReset
+      ? "The previous hosted container expired, so this turn is running in a freshly recreated container. Rebuild any prior generated workspace state you still need."
+      : null,
     "Use the shell tool when you need to inspect or transform files.",
     "Provide regular progress updates as you work.",
     "Write any user-downloadable deliverables into /mnt/data.",
@@ -371,14 +462,16 @@ export function buildAgentInstructions(task: Task, agent: Agent, contextSet: Con
     agent.instructions,
     "",
     `Current task: ${task.name}`,
-  ].join("\n");
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function summarizeShellOutput(
   output: {
     stdout: string;
     stderr: string;
-    outcome: { type: string; exit_code?: number };
+    outcome: { type: string; exit_code?: number | null; exitCode?: number | null };
   }[],
 ) {
   return output
@@ -394,7 +487,7 @@ export function summarizeShellOutput(
       }
 
       if (chunk.outcome.type === "exit") {
-        parts.push(`exit code ${chunk.outcome.exit_code ?? 0}`);
+        parts.push(`exit code ${chunk.outcome.exitCode ?? chunk.outcome.exit_code ?? 0}`);
       } else {
         parts.push("timed out");
       }

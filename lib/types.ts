@@ -45,6 +45,15 @@ export type TaskArtifact = {
 
 export type TaskStatus = "idle" | "running" | "completed" | "failed";
 
+export type TaskRun = {
+  id: string;
+  startedAt: string;
+  completedAt?: string;
+  responseId?: string;
+  traceId?: string;
+  status: "running" | "completed" | "failed";
+};
+
 export type Agent = {
   id: string;
   name: string;
@@ -60,9 +69,12 @@ export type Task = {
   agentId: string;
   name: string;
   containerId?: string;
+  sessionId: string;
   lastResponseId?: string;
+  lastTraceId?: string;
   messages: TaskMessage[];
   artifacts: TaskArtifact[];
+  runs: TaskRun[];
   status: TaskStatus;
   createdAt: string;
   updatedAt: string;

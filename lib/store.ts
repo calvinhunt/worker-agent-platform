@@ -19,6 +19,9 @@ type LegacyTask = Task & {
   contextSetId?: string;
   skillIds?: string[];
   agentId?: string;
+  sessionId?: string;
+  lastTraceId?: string;
+  runs?: Task["runs"];
 };
 
 function normalizeStore(parsed: Partial<AppStore>) {
@@ -49,9 +52,12 @@ function normalizeStore(parsed: Partial<AppStore>) {
       agentId,
       name: task.name,
       containerId: task.containerId,
+      sessionId: task.sessionId || task.id,
       lastResponseId: task.lastResponseId,
+      lastTraceId: task.lastTraceId,
       messages: task.messages ?? [],
       artifacts: task.artifacts ?? [],
+      runs: task.runs ?? [],
       status: task.status ?? "idle",
       createdAt: task.createdAt,
       updatedAt: task.updatedAt,
