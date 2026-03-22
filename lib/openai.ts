@@ -6,6 +6,10 @@ export function getDefaultModel() {
   return process.env.OPENAI_MODEL || "gpt-5";
 }
 
+export function getTriageModel() {
+  return process.env.OPENAI_TRIAGE_MODEL || "gpt-5-nano";
+}
+
 export function hasOpenAIKey() {
   return Boolean(process.env.OPENAI_API_KEY);
 }

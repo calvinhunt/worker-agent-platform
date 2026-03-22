@@ -21,7 +21,8 @@ const sharedRunner = new Runner({
 type CreateRuntimeAgentInput = {
   agentName: string;
   instructions: string;
-  containerId: string;
+  containerId?: string;
+  useHostedShell: boolean;
 };
 
 type StreamKnowledgeTaskInput = {
@@ -29,7 +30,7 @@ type StreamKnowledgeTaskInput = {
   agentId: string;
   agentName: string;
   sessionId: string;
-  containerId: string;
+  containerId?: string;
   instructions: string;
   prompt: string;
   traceId?: string;
@@ -38,6 +39,17 @@ type StreamKnowledgeTaskInput = {
 };
 
 function createRuntimeAgent(input: CreateRuntimeAgentInput) {
+  const tools = input.useHostedShell
+    ? [
+        shellTool({
+          environment: {
+            type: "container_reference",
+            containerId: input.containerId!,
+          },
+        }),
+      ]
+    : [];
+
   return new OpenAIAgent({
     name: input.agentName,
     handoffDescription: "General-purpose knowledge agent for file-aware task execution.",
@@ -50,14 +62,7 @@ function createRuntimeAgent(input: CreateRuntimeAgentInput) {
         verbosity: "medium",
       },
     },
-    tools: [
-      shellTool({
-        environment: {
-          type: "container_reference",
-          containerId: input.containerId,
-        },
-      }),
-    ],
+    tools,
   });
 }
 
@@ -75,6 +80,7 @@ export async function streamKnowledgeTask(input: StreamKnowledgeTaskInput) {
     agentName: input.agentName,
     instructions: input.instructions,
     containerId: input.containerId,
+    useHostedShell: true,
   });
   const session = createTaskSession(input.sessionId);
 
@@ -113,6 +119,63 @@ export async function streamKnowledgeTask(input: StreamKnowledgeTaskInput) {
         agentId: input.agentId,
         agentName: input.agentName,
         containerId: input.containerId,
+        sessionId: input.sessionId,
+        taskId: input.taskId,
+      },
+    },
+  );
+
+  return {
+    finalOutput,
+    responseId,
+    traceId,
+  };
+}
+
+export async function streamKnowledgeTaskWithoutSandbox(
+  input: Omit<StreamKnowledgeTaskInput, "containerId">,
+) {
+  const runtimeAgent = createRuntimeAgent({
+    agentName: input.agentName,
+    instructions: input.instructions,
+    useHostedShell: false,
+  });
+  const session = createTaskSession(input.sessionId);
+
+  let finalOutput = "";
+  let responseId: string | undefined;
+  let traceId: string | undefined;
+
+  await withTrace(
+    input.traceId || generateTraceId(),
+    async (trace) => {
+      traceId = trace.traceId;
+
+      const stream = await sharedRunner.run(runtimeAgent, input.prompt, {
+        session,
+        stream: true,
+        maxTurns: input.maxTurns ?? 16,
+      });
+
+      for await (const event of stream) {
+        await input.onEvent?.(event);
+      }
+
+      await stream.completed;
+
+      if (stream.error) {
+        throw stream.error;
+      }
+
+      finalOutput = String(stream.finalOutput || "").trim();
+      responseId = stream.lastResponseId;
+    },
+    {
+      name: "Knowledge Agent Standard Task Run",
+      groupId: input.taskId,
+      metadata: {
+        agentId: input.agentId,
+        agentName: input.agentName,
         sessionId: input.sessionId,
         taskId: input.taskId,
       },

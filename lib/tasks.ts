@@ -141,6 +141,31 @@ export async function ensureTaskReady(
   };
 }
 
+export async function getTaskContext(taskId: string) {
+  const store = await readStore();
+  const task = store.tasks.find((entry) => entry.id === taskId);
+
+  if (!task) {
+    throw new Error("Task not found.");
+  }
+
+  const agent = store.agents.find((entry) => entry.id === task.agentId);
+  if (!agent) {
+    throw new Error("Agent not found.");
+  }
+
+  const contextSet = store.contextSets.find((entry) => entry.id === agent.contextSetId);
+  if (!contextSet) {
+    throw new Error("Context set not found.");
+  }
+
+  return {
+    task,
+    agent,
+    contextSet,
+  };
+}
+
 export async function listTaskArtifacts(taskId: string) {
   const client = getOpenAIClient();
   const store = await readStore();
@@ -444,8 +469,26 @@ export function buildAgentInstructions(
   task: Task,
   agent: Agent,
   contextSet: ContextSet,
-  options?: { containerWasReset?: boolean },
+  options?: { containerWasReset?: boolean; useHostedShell?: boolean },
 ) {
+  if (options?.useHostedShell === false) {
+    return [
+      "You are running in standard chat mode without a hosted shell container.",
+      `The active agent is "${agent.name}".`,
+      `The active context set is "${contextSet.name}".`,
+      "Do not claim that you edited files, ran commands, or created /mnt/data artifacts.",
+      "If the user asks for file operations, code edits, execution, or data analysis over local files, clearly request escalation to hosted shell mode.",
+      "Provide concise, direct answers and ask clarifying questions when blocked by missing runtime access.",
+      "",
+      "Agent instructions:",
+      agent.instructions,
+      "",
+      `Current task: ${task.name}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
   return [
     "You are operating inside an OpenAI hosted shell container.",
     `The active agent is "${agent.name}".`,
