@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 
 import { generateTraceId } from "@openai/agents";
 
-import { streamKnowledgeTask } from "@/lib/task-runtime";
+import { streamKnowledgeTask, streamKnowledgeTaskWithoutSandbox } from "@/lib/task-runtime";
+import { triageSandboxNeed } from "@/lib/sandbox-triage";
 import {
   buildAgentInstructions,
   ensureTaskReady,
+  getTaskContext,
   setTaskStatus,
   startTaskRun,
   syncTaskArtifacts,
@@ -51,89 +53,138 @@ export async function POST(
         runId = run.id;
         write({ type: "status", status: "running" });
 
-        const { task, agent, contextSet, containerWasCreated, containerWasReset } =
-          await ensureTaskReady(taskId);
+        const { task: existingTask, agent, contextSet } = await getTaskContext(taskId);
+        const triage = await triageSandboxNeed({
+          prompt,
+          agentName: agent.name,
+          agentInstructions: agent.instructions,
+          contextSetName: contextSet.name,
+        });
+        const shouldUseSandbox = triage.category === "sandbox";
+
         write({
           type: "update",
-          message: containerWasReset
-            ? `Hosted container expired. Recreated container ${task.containerId}.`
-            : containerWasCreated
-              ? `Prepared hosted container ${task.containerId}.`
-              : `Using container ${task.containerId}`,
+          message: shouldUseSandbox
+            ? `Triage selected hosted shell mode (${triage.source}, confidence ${triage.confidence.toFixed(2)}).`
+            : `Triage selected standard mode without hosted shell (${triage.source}, confidence ${triage.confidence.toFixed(2)}).`,
         });
 
-        const { finalOutput, responseId } = await streamKnowledgeTask({
-          taskId,
-          agentId: agent.id,
-          agentName: agent.name,
-          sessionId: task.sessionId,
-          containerId: task.containerId!,
-          instructions: buildAgentInstructions(task, agent, contextSet, {
-            containerWasReset,
-          }),
-          prompt,
-          traceId,
-          onEvent(event) {
-            if (event.type === "raw_model_stream_event") {
-              switch (event.data.type) {
-                case "output_text_delta":
-                  assistantDraft += event.data.delta;
-                  write({ type: "assistant_delta", delta: event.data.delta });
-                  break;
-                case "response_done":
-                  write({
-                    type: "update",
-                    message: "Model response completed. Gathering /mnt/data artifacts.",
-                  });
-                  break;
-                default:
-                  break;
-              }
+        let responseId: string | undefined;
+        let assistantText = "";
+        let cachedArtifacts = existingTask.artifacts;
 
-              return;
-            }
+        if (shouldUseSandbox) {
+          const { task, containerWasCreated, containerWasReset } = await ensureTaskReady(taskId);
+          write({
+            type: "update",
+            message: containerWasReset
+              ? `Hosted container expired. Recreated container ${task.containerId}.`
+              : containerWasCreated
+                ? `Prepared hosted container ${task.containerId}.`
+                : `Using container ${task.containerId}`,
+          });
 
-            if (event.type === "run_item_stream_event") {
-              if (
-                event.name === "tool_called" &&
-                event.item.type === "tool_call_item" &&
-                event.item.rawItem?.type === "shell_call"
-              ) {
-                write({
-                  type: "update",
-                  message: `Running shell step: ${event.item.rawItem.action.commands.join(" && ")}`,
-                });
+          const sandboxResult = await streamKnowledgeTask({
+            taskId,
+            agentId: agent.id,
+            agentName: agent.name,
+            sessionId: task.sessionId,
+            containerId: task.containerId!,
+            instructions: buildAgentInstructions(task, agent, contextSet, {
+              containerWasReset,
+            }),
+            prompt,
+            traceId,
+            onEvent(event) {
+              if (event.type === "raw_model_stream_event") {
+                switch (event.data.type) {
+                  case "output_text_delta":
+                    assistantDraft += event.data.delta;
+                    write({ type: "assistant_delta", delta: event.data.delta });
+                    break;
+                  case "response_done":
+                    write({
+                      type: "update",
+                      message: "Model response completed. Gathering /mnt/data artifacts.",
+                    });
+                    break;
+                  default:
+                    break;
+                }
+
                 return;
               }
 
-              if (
-                event.name === "tool_output" &&
-                event.item.type === "tool_call_output_item" &&
-                event.item.rawItem?.type === "shell_call_output"
-              ) {
-                const summary = summarizeShellOutput(event.item.rawItem.output);
-                if (summary) {
+              if (event.type === "run_item_stream_event") {
+                if (
+                  event.name === "tool_called" &&
+                  event.item.type === "tool_call_item" &&
+                  event.item.rawItem?.type === "shell_call"
+                ) {
                   write({
-                    type: "shell_output",
-                    output: summary,
+                    type: "update",
+                    message: `Running shell step: ${event.item.rawItem.action.commands.join(" && ")}`,
                   });
+                  return;
+                }
+
+                if (
+                  event.name === "tool_output" &&
+                  event.item.type === "tool_call_output_item" &&
+                  event.item.rawItem?.type === "shell_call_output"
+                ) {
+                  const summary = summarizeShellOutput(event.item.rawItem.output);
+                  if (summary) {
+                    write({
+                      type: "shell_output",
+                      output: summary,
+                    });
+                  }
                 }
               }
-            }
-          },
-        });
-
-        const assistantText = finalOutput || assistantDraft || "Completed without a final text response.";
-        let cachedArtifacts = task.artifacts;
-
-        try {
-          cachedArtifacts = await syncTaskArtifacts(taskId);
-        } catch (error) {
-          console.error("Artifact cache failed:", error);
-          write({
-            type: "update",
-            message: "Artifact caching failed, but the task output was preserved.",
+            },
           });
+
+          assistantText =
+            sandboxResult.finalOutput ||
+            assistantDraft ||
+            "Completed without a final text response.";
+          responseId = sandboxResult.responseId;
+
+          try {
+            cachedArtifacts = await syncTaskArtifacts(taskId);
+          } catch (error) {
+            console.error("Artifact cache failed:", error);
+            write({
+              type: "update",
+              message: "Artifact caching failed, but the task output was preserved.",
+            });
+          }
+        } else {
+          const standardResult = await streamKnowledgeTaskWithoutSandbox({
+            taskId,
+            agentId: agent.id,
+            agentName: agent.name,
+            sessionId: existingTask.sessionId,
+            instructions: buildAgentInstructions(existingTask, agent, contextSet, {
+              useHostedShell: false,
+            }),
+            prompt,
+            traceId,
+            onEvent(event) {
+              if (event.type === "raw_model_stream_event" && event.data.type === "output_text_delta") {
+                assistantDraft += event.data.delta;
+                write({ type: "assistant_delta", delta: event.data.delta });
+              }
+            },
+          });
+
+          assistantText =
+            standardResult.finalOutput ||
+            assistantDraft ||
+            "Completed without a final text response.";
+          responseId = standardResult.responseId;
+          cachedArtifacts = [];
         }
 
         await updateTaskAfterRun({
