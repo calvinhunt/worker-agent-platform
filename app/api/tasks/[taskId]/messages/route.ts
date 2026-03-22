@@ -25,6 +25,12 @@ function streamLine(payload: unknown) {
   return `${JSON.stringify(payload)}\n`;
 }
 
+function isHostedShellLoadFailure(error: unknown) {
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes("load failed");
+}
+
 export async function POST(
   request: Request,
   context: { params: Promise<{ taskId: string }> },
@@ -84,66 +90,98 @@ export async function POST(
                 : `Using container ${task.containerId}`,
           });
 
-          const sandboxResult = await streamKnowledgeTask({
-            taskId,
-            agentId: agent.id,
-            agentName: agent.name,
-            sessionId: task.sessionId,
-            containerId: task.containerId!,
-            instructions: buildAgentInstructions(task, agent, contextSet, {
-              containerWasReset,
-            }),
-            prompt,
-            traceId,
-            onEvent(event) {
-              if (event.type === "raw_model_stream_event") {
-                switch (event.data.type) {
-                  case "output_text_delta":
-                    assistantDraft += event.data.delta;
-                    write({ type: "assistant_delta", delta: event.data.delta });
-                    break;
-                  case "response_done":
-                    write({
-                      type: "update",
-                      message: "Model response completed. Gathering /mnt/data artifacts.",
-                    });
-                    break;
-                  default:
-                    break;
-                }
+          async function runSandboxedTask(input: { sessionId: string; containerId: string; reset: boolean }) {
+            return streamKnowledgeTask({
+              taskId,
+              agentId: agent.id,
+              agentName: agent.name,
+              sessionId: input.sessionId,
+              containerId: input.containerId,
+              instructions: buildAgentInstructions(task, agent, contextSet, {
+                containerWasReset: input.reset,
+              }),
+              prompt,
+              traceId,
+              onEvent(event) {
+                if (event.type === "raw_model_stream_event") {
+                  switch (event.data.type) {
+                    case "output_text_delta":
+                      assistantDraft += event.data.delta;
+                      write({ type: "assistant_delta", delta: event.data.delta });
+                      break;
+                    case "response_done":
+                      write({
+                        type: "update",
+                        message: "Model response completed. Gathering /mnt/data artifacts.",
+                      });
+                      break;
+                    default:
+                      break;
+                  }
 
-                return;
-              }
-
-              if (event.type === "run_item_stream_event") {
-                if (
-                  event.name === "tool_called" &&
-                  event.item.type === "tool_call_item" &&
-                  event.item.rawItem?.type === "shell_call"
-                ) {
-                  write({
-                    type: "update",
-                    message: `Running shell step: ${event.item.rawItem.action.commands.join(" && ")}`,
-                  });
                   return;
                 }
 
-                if (
-                  event.name === "tool_output" &&
-                  event.item.type === "tool_call_output_item" &&
-                  event.item.rawItem?.type === "shell_call_output"
-                ) {
-                  const summary = summarizeShellOutput(event.item.rawItem.output);
-                  if (summary) {
+                if (event.type === "run_item_stream_event") {
+                  if (
+                    event.name === "tool_called" &&
+                    event.item.type === "tool_call_item" &&
+                    event.item.rawItem?.type === "shell_call"
+                  ) {
                     write({
-                      type: "shell_output",
-                      output: summary,
+                      type: "update",
+                      message: `Running shell step: ${event.item.rawItem.action.commands.join(" && ")}`,
                     });
+                    return;
+                  }
+
+                  if (
+                    event.name === "tool_output" &&
+                    event.item.type === "tool_call_output_item" &&
+                    event.item.rawItem?.type === "shell_call_output"
+                  ) {
+                    const summary = summarizeShellOutput(event.item.rawItem.output);
+                    if (summary) {
+                      write({
+                        type: "shell_output",
+                        output: summary,
+                      });
+                    }
                   }
                 }
-              }
-            },
-          });
+              },
+            });
+          }
+
+          let sandboxResult: Awaited<ReturnType<typeof streamKnowledgeTask>>;
+          try {
+            sandboxResult = await runSandboxedTask({
+              sessionId: task.sessionId,
+              containerId: task.containerId!,
+              reset: containerWasReset,
+            });
+          } catch (error) {
+            if (!isHostedShellLoadFailure(error)) {
+              throw error;
+            }
+
+            write({
+              type: "update",
+              message: "Hosted shell load failed. Recreating container and retrying once.",
+            });
+
+            const resetState = await ensureTaskReady(taskId, { forceNewContainer: true });
+            write({
+              type: "update",
+              message: `Recreated hosted container ${resetState.task.containerId}. Retrying run.`,
+            });
+
+            sandboxResult = await runSandboxedTask({
+              sessionId: resetState.task.sessionId,
+              containerId: resetState.task.containerId!,
+              reset: true,
+            });
+          }
 
           assistantText =
             sandboxResult.finalOutput ||
