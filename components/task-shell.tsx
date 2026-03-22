@@ -61,7 +61,16 @@ function formatBytes(bytes: number | null) {
 }
 
 async function getJson<T>(url: string, init?: RequestInit) {
-  const response = await fetch(url, init);
+  let response: Response;
+  try {
+    response = await fetch(url, init);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`Network error while loading ${url}. Check the server logs and retry.`);
+    }
+
+    throw error;
+  }
   const text = await response.text();
   let body: (T & { error?: string }) | null = null;
   if (text) {
@@ -213,6 +222,7 @@ export function TaskShell() {
   const [newTaskName, setNewTaskName] = useState("");
   const [prompt, setPrompt] = useState("");
   const [runState, setRunState] = useState<RunState>(emptyRunState);
+  const [stateRefreshError, setStateRefreshError] = useState<string | null>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
 
   const tasksByAgent = useMemo(() => {
@@ -256,43 +266,50 @@ export function TaskShell() {
   );
 
   async function refreshState(preferred?: { agentId?: string | null; taskId?: string | null }) {
-    const nextState = await getJson<ClientStatePayload>("/api/state");
-    setState(nextState);
+    try {
+      const nextState = await getJson<ClientStatePayload>("/api/state");
+      setState(nextState);
+      setStateRefreshError(null);
 
-    const preferredTask =
-      preferred?.taskId && nextState.tasks.some((t) => t.id === preferred.taskId)
-        ? nextState.tasks.find((t) => t.id === preferred.taskId) ?? null
-        : null;
-    const currentTask =
-      !preferredTask && selectedTaskId && nextState.tasks.some((t) => t.id === selectedTaskId)
-        ? nextState.tasks.find((t) => t.id === selectedTaskId) ?? null
-        : null;
-    const nextTask = preferredTask ?? currentTask;
+      const preferredTask =
+        preferred?.taskId && nextState.tasks.some((t) => t.id === preferred.taskId)
+          ? nextState.tasks.find((t) => t.id === preferred.taskId) ?? null
+          : null;
+      const currentTask =
+        !preferredTask && selectedTaskId && nextState.tasks.some((t) => t.id === selectedTaskId)
+          ? nextState.tasks.find((t) => t.id === selectedTaskId) ?? null
+          : null;
+      const nextTask = preferredTask ?? currentTask;
 
-    const preferredAgentId = preferred?.agentId || nextTask?.agentId || null;
-    const nextAgentId =
-      (preferredAgentId && nextState.agents.some((a) => a.id === preferredAgentId)
-        ? preferredAgentId
-        : null) ||
-      (selectedAgentId && nextState.agents.some((a) => a.id === selectedAgentId)
-        ? selectedAgentId
-        : null) ||
-      nextState.agents[0]?.id ||
-      null;
+      const preferredAgentId = preferred?.agentId || nextTask?.agentId || null;
+      const nextAgentId =
+        (preferredAgentId && nextState.agents.some((a) => a.id === preferredAgentId)
+          ? preferredAgentId
+          : null) ||
+        (selectedAgentId && nextState.agents.some((a) => a.id === selectedAgentId)
+          ? selectedAgentId
+          : null) ||
+        nextState.agents[0]?.id ||
+        null;
 
-    setSelectedTaskId(nextTask?.id ?? null);
-    setSelectedAgentId(nextAgentId);
-    setExpandedAgents((cur) => {
-      const next = { ...cur };
-      if (nextAgentId) next[nextAgentId] = true;
-      return next;
-    });
+      setSelectedTaskId(nextTask?.id ?? null);
+      setSelectedAgentId(nextAgentId);
+      setExpandedAgents((cur) => {
+        const next = { ...cur };
+        if (nextAgentId) next[nextAgentId] = true;
+        return next;
+      });
+    } catch (error) {
+      setStateRefreshError(error instanceof Error ? error.message : "Failed to refresh state.");
+    }
   }
 
   useEffect(() => {
     void (async () => {
       try {
         await refreshState();
+      } catch {
+        // Error surfaced through stateRefreshError.
       } finally {
         setLoading(false);
       }
@@ -428,7 +445,16 @@ export function TaskShell() {
 
         for (const line of lines) {
           if (!line.trim()) continue;
-          const event = JSON.parse(line) as StreamEvent;
+          let event: StreamEvent;
+          try {
+            event = JSON.parse(line) as StreamEvent;
+          } catch {
+            setRunState((s) => ({
+              ...s,
+              error: "Received a malformed stream response from the server.",
+            }));
+            continue;
+          }
 
           if (event.type === "assistant_delta") {
             setRunState((s) => ({ ...s, assistantDraft: s.assistantDraft + event.delta }));
@@ -716,6 +742,11 @@ export function TaskShell() {
         {/* Content */}
         <main className="flex-1 overflow-y-auto">
           <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+            {stateRefreshError && (
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                {stateRefreshError}
+              </div>
+            )}
 
             {/* ── New Agent form ──────────────────────────────── */}
             {!selectedAgent && (
