@@ -152,9 +152,7 @@ export async function listTaskArtifacts(taskId: string) {
 
   const page = await client.containers.files.list(task.containerId, { order: "asc" });
 
-  const files = page.data.filter(
-    (file) => file.path.startsWith("/mnt/data/") && file.source === "assistant",
-  );
+  const files = page.data.filter((file) => isDownloadableContainerArtifact(file.path, file.source));
 
   return Promise.all(
     files.map(async (file) => {
@@ -252,9 +250,11 @@ export function mergeArtifacts(primary: TaskArtifact[], secondary: TaskArtifact[
 }
 
 export function filterDownloadableArtifacts(artifacts: TaskArtifact[]) {
-  return artifacts.filter(
-    (artifact) => artifact.source === "assistant" && artifact.path.startsWith("/mnt/data/"),
-  );
+  return artifacts.filter((artifact) => isDownloadableContainerArtifact(artifact.path, artifact.source));
+}
+
+function isDownloadableContainerArtifact(pathname: string, source: string) {
+  return pathname.startsWith("/mnt/data/") && source !== "user";
 }
 
 export async function cacheTaskArtifacts(taskId: string, containerId: string, artifacts: TaskArtifact[]) {
