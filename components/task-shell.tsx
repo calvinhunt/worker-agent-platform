@@ -52,6 +52,15 @@ function formatDate(iso: string) {
   });
 }
 
+function formatDateTime(iso: string) {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 function formatBytes(bytes: number | null) {
   if (bytes == null) return "—";
   if (bytes < 1024) return `${bytes} B`;
@@ -479,7 +488,9 @@ export function TaskShell() {
               updates: [...s.updates, "Task run complete."],
             }));
             startTransition(() => {
-              void refreshState({ agentId: selectedTask.agentId, taskId: selectedTask.id });
+              void refreshState({ agentId: selectedTask.agentId, taskId: selectedTask.id }).finally(
+                () => setRunState(emptyRunState()),
+              );
             });
           }
         }
@@ -1086,6 +1097,31 @@ export function TaskShell() {
                               {entry}
                             </li>
                           ))}
+                        </ul>
+                      ) : selectedTask.runs.length > 0 ? (
+                        <ul className="space-y-1.5">
+                          {selectedTask.runs
+                            .slice()
+                            .reverse()
+                            .map((run) => (
+                              <li key={run.id} className="flex items-start gap-2 text-xs text-gray-500">
+                                <span
+                                  className={`mt-1.5 block size-1 shrink-0 rounded-full ${
+                                    run.status === "failed"
+                                      ? "bg-red-400"
+                                      : run.status === "running"
+                                        ? "bg-blue-400"
+                                        : "bg-emerald-400"
+                                  }`}
+                                />
+                                <span>
+                                  Run {run.status} at {formatDateTime(run.startedAt)}
+                                  {run.completedAt
+                                    ? ` · finished ${formatDateTime(run.completedAt)}`
+                                    : ""}
+                                </span>
+                              </li>
+                            ))}
                         </ul>
                       ) : (
                         <p className="py-3 text-center text-xs text-gray-400">No activity yet</p>
