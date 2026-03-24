@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { slugifySkillName } from "@/lib/skills";
 import { normalizeRelativePath } from "@/lib/tasks";
 import type { ContextSet, SkillBundle, StoredFile } from "@/lib/types";
 
@@ -44,6 +45,7 @@ export async function createSkillBundleRecord(uploadedFile: File, providedName?:
   const skillId = randomUUID();
   const rootDir = path.join(process.cwd(), "data", "skills", skillId);
   const diskPath = path.join(rootDir, uploadedFile.name);
+  const name = providedName || uploadedFile.name.replace(/\.zip$/i, "");
 
   await mkdir(rootDir, { recursive: true });
   await writeFile(diskPath, Buffer.from(await uploadedFile.arrayBuffer()));
@@ -52,9 +54,14 @@ export async function createSkillBundleRecord(uploadedFile: File, providedName?:
 
   return {
     id: skillId,
-    name: providedName || uploadedFile.name.replace(/\.zip$/i, ""),
+    name,
+    description: "",
+    slug: slugifySkillName(name),
+    source: "uploaded",
     filename: uploadedFile.name,
     diskPath,
+    format: "zip",
+    files: [],
     createdAt: timestamp,
     updatedAt: timestamp,
   } satisfies SkillBundle;

@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { toFile } from "openai";
 
+import { getSkillUploadables } from "@/lib/skills";
 import { getOpenAIClient } from "@/lib/openai";
 import { readStore, writeStore } from "@/lib/store";
 import type {
@@ -81,7 +82,7 @@ export async function ensureTaskReady(
     }
 
     const createdSkill = await client.skills.create({
-      files: await toFile(createReadStream(skill.diskPath), skill.filename),
+      files: await getSkillUploadables(skill),
     });
 
     skill.openaiSkillId = createdSkill.id;
@@ -159,10 +160,13 @@ export async function getTaskContext(taskId: string) {
     throw new Error("Context set not found.");
   }
 
+  const skills = store.skills.filter((entry) => agent.skillIds.includes(entry.id));
+
   return {
     task,
     agent,
     contextSet,
+    skills,
   };
 }
 
@@ -469,6 +473,7 @@ export function buildAgentInstructions(
   task: Task,
   agent: Agent,
   contextSet: ContextSet,
+  skills: SkillBundle[],
   options?: { containerWasReset?: boolean; useHostedShell?: boolean },
 ) {
   if (options?.useHostedShell === false) {
@@ -476,8 +481,13 @@ export function buildAgentInstructions(
       "You are running in standard chat mode without a hosted shell container.",
       `The active agent is "${agent.name}".`,
       `The active context set is "${contextSet.name}".`,
+      skills.length
+        ? `Selected skills: ${skills.map((skill) => skill.name).join(", ")}. Skills are only attached in hosted shell mode, so explicitly say you need hosted shell access if one of them is required.`
+        : null,
       "Do not claim that you edited files, ran commands, or created /mnt/data artifacts.",
       "If the user asks for file operations, code edits, execution, or data analysis over local files, clearly request escalation to hosted shell mode.",
+      'During multi-step work, emit a standalone line exactly like <activity type="summary">brief progress update</activity>.',
+      "Keep activity lines short and keep them out of the final answer.",
       "Provide concise, direct answers and ask clarifying questions when blocked by missing runtime access.",
       "",
       "Agent instructions:",
@@ -493,11 +503,16 @@ export function buildAgentInstructions(
     "You are operating inside an OpenAI hosted shell container.",
     `The active agent is "${agent.name}".`,
     `The active context set is "${contextSet.name}". Read the uploaded files before doing substantive work.`,
+    skills.length
+      ? `Attached skills: ${skills.map((skill) => skill.name).join(", ")}.`
+      : null,
     options?.containerWasReset
       ? "The previous hosted container expired, so this turn is running in a freshly recreated container. Rebuild any prior generated workspace state you still need."
       : null,
     "Use the shell tool when you need to inspect or transform files.",
-    "Provide regular progress updates as you work.",
+    'When you activate an attached skill, emit a standalone line exactly like <activity type="skill" name="skill-name">brief reason</activity> before using it.',
+    'At meaningful milestones, emit a standalone line exactly like <activity type="summary">brief progress update</activity>.',
+    "Keep activity lines short, use them only while working, and keep them out of the final answer.",
     "Write any user-downloadable deliverables into /mnt/data.",
     "At the end, summarize the outcome and mention the most important /mnt/data paths.",
     "",

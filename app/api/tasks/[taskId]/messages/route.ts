@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { generateTraceId } from "@openai/agents";
 
+import { parseActivityMarker, stripActivityMarkers, summarizeCommand } from "@/lib/activity";
 import { streamKnowledgeTask, streamKnowledgeTaskWithoutSandbox } from "@/lib/task-runtime";
 import { triageSandboxNeed } from "@/lib/sandbox-triage";
 import {
@@ -51,15 +52,95 @@ export async function POST(
         controller.enqueue(encoder.encode(streamLine(payload)));
       };
       let assistantDraft = "";
+      let pendingAssistantLine = "";
       let runId: string | undefined;
       const traceId = generateTraceId();
+
+      const emitAssistantText = (text: string) => {
+        if (!text) {
+          return;
+        }
+
+        assistantDraft += text;
+        write({ type: "assistant_delta", delta: text });
+      };
+
+      const handleAssistantLine = (line: string) => {
+        const activity = parseActivityMarker(line);
+
+        if (!activity) {
+          emitAssistantText(`${line}\n`);
+          return;
+        }
+
+        if (activity.kind === "skill") {
+          write({
+            type: "skill_use",
+            skillName: activity.name,
+            message: activity.message || `Activated ${activity.name}.`,
+          });
+          return;
+        }
+
+        write({
+          type: "work_summary",
+          message: activity.message,
+        });
+      };
+
+      const ingestAssistantDelta = (delta: string) => {
+        pendingAssistantLine += delta;
+        const lines = pendingAssistantLine.split(/\r?\n/);
+        pendingAssistantLine = lines.pop() ?? "";
+
+        for (const line of lines) {
+          handleAssistantLine(line);
+        }
+      };
+
+      const flushAssistantDelta = () => {
+        if (!pendingAssistantLine) {
+          return;
+        }
+
+        const activity = parseActivityMarker(pendingAssistantLine);
+
+        if (activity?.kind === "skill") {
+          write({
+            type: "skill_use",
+            skillName: activity.name,
+            message: activity.message || `Activated ${activity.name}.`,
+          });
+        } else if (activity?.kind === "summary") {
+          write({
+            type: "work_summary",
+            message: activity.message,
+          });
+        } else {
+          emitAssistantText(pendingAssistantLine);
+        }
+
+        pendingAssistantLine = "";
+      };
+
+      const finalizeAssistantText = (finalOutput?: string) => {
+        flushAssistantDelta();
+        const visibleFinalOutput = stripActivityMarkers(finalOutput || assistantDraft).trim();
+        return visibleFinalOutput || assistantDraft.trim() || "Completed without a final text response.";
+      };
 
       try {
         const { run } = await startTaskRun(taskId, { traceId });
         runId = run.id;
         write({ type: "status", status: "running" });
 
-        const { task: existingTask, agent, contextSet } = await getTaskContext(taskId);
+        write({
+          type: "work_summary",
+          message: "Reviewing the task, context files, and available skills.",
+        });
+
+        const { task: existingTask, agent, contextSet, skills: selectedSkills } =
+          await getTaskContext(taskId);
         const triage = await triageSandboxNeed({
           prompt,
           agentName: agent.name,
@@ -69,10 +150,10 @@ export async function POST(
         const shouldUseSandbox = triage.category === "sandbox";
 
         write({
-          type: "update",
+          type: "work_summary",
           message: shouldUseSandbox
-            ? `Triage selected hosted shell mode (${triage.source}, confidence ${triage.confidence.toFixed(2)}).`
-            : `Triage selected standard mode without hosted shell (${triage.source}, confidence ${triage.confidence.toFixed(2)}).`,
+            ? "Routing this task to hosted shell mode."
+            : "Handling this task in standard mode without hosted shell access.",
         });
 
         let responseId: string | undefined;
@@ -80,25 +161,15 @@ export async function POST(
         let cachedArtifacts = existingTask.artifacts;
 
         if (shouldUseSandbox) {
-          const { task, containerWasCreated, containerWasReset } = await ensureTaskReady(taskId);
-          write({
-            type: "update",
-            message: containerWasReset
-              ? `Hosted container expired. Recreated container ${task.containerId}.`
-              : containerWasCreated
-                ? `Prepared hosted container ${task.containerId}.`
-                : `Using container ${task.containerId}`,
-          });
-
-          async function runSandboxedTask(input: { sessionId: string; containerId: string; reset: boolean }) {
-            return streamKnowledgeTask({
+          const runSandboxedTask = async (readyState: Awaited<ReturnType<typeof ensureTaskReady>>) =>
+            streamKnowledgeTask({
               taskId,
               agentId: agent.id,
               agentName: agent.name,
-              sessionId: input.sessionId,
-              containerId: input.containerId,
-              instructions: buildAgentInstructions(task, agent, contextSet, {
-                containerWasReset: input.reset,
+              sessionId: readyState.task.sessionId,
+              containerId: readyState.task.containerId!,
+              instructions: buildAgentInstructions(readyState.task, agent, contextSet, readyState.skills, {
+                containerWasReset: readyState.containerWasReset,
               }),
               prompt,
               traceId,
@@ -106,13 +177,13 @@ export async function POST(
                 if (event.type === "raw_model_stream_event") {
                   switch (event.data.type) {
                     case "output_text_delta":
-                      assistantDraft += event.data.delta;
-                      write({ type: "assistant_delta", delta: event.data.delta });
+                      ingestAssistantDelta(event.data.delta);
                       break;
                     case "response_done":
+                      flushAssistantDelta();
                       write({
-                        type: "update",
-                        message: "Model response completed. Gathering /mnt/data artifacts.",
+                        type: "work_summary",
+                        message: "Finalizing the response and collecting generated files.",
                       });
                       break;
                     default:
@@ -129,8 +200,9 @@ export async function POST(
                     event.item.rawItem?.type === "shell_call"
                   ) {
                     write({
-                      type: "update",
-                      message: `Running shell step: ${event.item.rawItem.action.commands.join(" && ")}`,
+                      type: "tool_use",
+                      toolName: "shell",
+                      message: summarizeCommand(event.item.rawItem.action.commands),
                     });
                     return;
                   }
@@ -151,42 +223,38 @@ export async function POST(
                 }
               },
             });
+
+          let readyState = await ensureTaskReady(taskId);
+
+          if (readyState.containerWasCreated || readyState.containerWasReset) {
+            write({
+              type: "work_summary",
+              message: "Preparing the hosted workspace for this run.",
+            });
           }
 
           let sandboxResult: Awaited<ReturnType<typeof streamKnowledgeTask>>;
           try {
-            sandboxResult = await runSandboxedTask({
-              sessionId: task.sessionId,
-              containerId: task.containerId!,
-              reset: containerWasReset,
-            });
+            sandboxResult = await runSandboxedTask(readyState);
           } catch (error) {
             if (!isHostedShellLoadFailure(error)) {
               throw error;
             }
 
             write({
-              type: "update",
-              message: "Hosted shell load failed. Recreating container and retrying once.",
+              type: "work_summary",
+              message: "Hosted shell load failed. Recreating the workspace and retrying once.",
             });
 
-            const resetState = await ensureTaskReady(taskId, { forceNewContainer: true });
+            readyState = await ensureTaskReady(taskId, { forceNewContainer: true });
             write({
-              type: "update",
-              message: `Recreated hosted container ${resetState.task.containerId}. Retrying run.`,
+              type: "work_summary",
+              message: "Retrying in a fresh hosted workspace.",
             });
-
-            sandboxResult = await runSandboxedTask({
-              sessionId: resetState.task.sessionId,
-              containerId: resetState.task.containerId!,
-              reset: true,
-            });
+            sandboxResult = await runSandboxedTask(readyState);
           }
 
-          assistantText =
-            sandboxResult.finalOutput ||
-            assistantDraft ||
-            "Completed without a final text response.";
+          assistantText = finalizeAssistantText(sandboxResult.finalOutput);
           responseId = sandboxResult.responseId;
 
           try {
@@ -194,7 +262,7 @@ export async function POST(
           } catch (error) {
             console.error("Artifact cache failed:", error);
             write({
-              type: "update",
+              type: "work_summary",
               message: "Artifact caching failed, but the task output was preserved.",
             });
           }
@@ -204,23 +272,34 @@ export async function POST(
             agentId: agent.id,
             agentName: agent.name,
             sessionId: existingTask.sessionId,
-            instructions: buildAgentInstructions(existingTask, agent, contextSet, {
+            instructions: buildAgentInstructions(existingTask, agent, contextSet, selectedSkills, {
               useHostedShell: false,
             }),
             prompt,
             traceId,
             onEvent(event) {
-              if (event.type === "raw_model_stream_event" && event.data.type === "output_text_delta") {
-                assistantDraft += event.data.delta;
-                write({ type: "assistant_delta", delta: event.data.delta });
+              if (event.type !== "raw_model_stream_event") {
+                return;
+              }
+
+              switch (event.data.type) {
+                case "output_text_delta":
+                  ingestAssistantDelta(event.data.delta);
+                  break;
+                case "response_done":
+                  flushAssistantDelta();
+                  write({
+                    type: "work_summary",
+                    message: "Finalizing the response.",
+                  });
+                  break;
+                default:
+                  break;
               }
             },
           });
 
-          assistantText =
-            standardResult.finalOutput ||
-            assistantDraft ||
-            "Completed without a final text response.";
+          assistantText = finalizeAssistantText(standardResult.finalOutput);
           responseId = standardResult.responseId;
           cachedArtifacts = [];
         }
@@ -251,8 +330,8 @@ export async function POST(
           recoveredArtifacts = await syncTaskArtifacts(taskId);
           if (recoveredArtifacts.length) {
             write({
-              type: "update",
-              message: `Recovered ${recoveredArtifacts.length} downloadable files from the container after the run error.`,
+              type: "work_summary",
+              message: `Recovered ${recoveredArtifacts.length} downloadable files after the run error.`,
             });
           }
         } catch (recoveryError) {

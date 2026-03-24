@@ -15,15 +15,31 @@ export type ContextSet = {
   updatedAt: string;
 };
 
+export type SkillSource = "manual" | "curated" | "uploaded";
+export type SkillFormat = "directory" | "zip";
+
 export type SkillBundle = {
   id: string;
   name: string;
+  description: string;
+  slug: string;
+  source: SkillSource;
   filename: string;
   diskPath: string;
+  format: SkillFormat;
+  files: StoredFile[];
   openaiSkillId?: string;
   defaultVersion?: string;
+  originUrl?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type CuratedSkillCatalogEntry = {
+  slug: string;
+  name: string;
+  description: string;
+  sourceUrl: string;
 };
 
 export type TaskMessage = {

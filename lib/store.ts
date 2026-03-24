@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { slugifySkillName } from "@/lib/skills";
 import type { Agent, AppStore, Task } from "@/lib/types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
@@ -28,6 +29,49 @@ function normalizeStore(parsed: Partial<AppStore>) {
   const agents = [...(parsed.agents ?? [])];
   const tasks = (parsed.tasks ?? []).map((entry) => entry as LegacyTask);
   const agentIds = new Set(agents.map((agent) => agent.id));
+  const skills = (parsed.skills ?? []).map((entry) => {
+    const timestamp = new Date().toISOString();
+    const diskPath = typeof entry.diskPath === "string" ? entry.diskPath : "";
+    const filename =
+      typeof entry.filename === "string" && entry.filename
+        ? entry.filename
+        : path.basename(diskPath) || "skill.zip";
+
+    return {
+      id: typeof entry.id === "string" ? entry.id : randomUUID(),
+      name:
+        typeof entry.name === "string" && entry.name.trim()
+          ? entry.name
+          : "Imported skill",
+      description: typeof entry.description === "string" ? entry.description : "",
+      slug:
+        typeof entry.slug === "string" && entry.slug.trim()
+          ? entry.slug
+          : slugifySkillName(typeof entry.name === "string" ? entry.name : filename),
+      source:
+        entry.source === "manual" || entry.source === "curated" || entry.source === "uploaded"
+          ? entry.source
+          : "uploaded",
+      filename,
+      diskPath,
+      format:
+        entry.format === "directory" || entry.format === "zip"
+          ? entry.format
+          : filename.toLowerCase().endsWith(".zip")
+            ? "zip"
+            : "directory",
+      files: Array.isArray(entry.files) ? entry.files : [],
+      openaiSkillId:
+        typeof entry.openaiSkillId === "string" ? entry.openaiSkillId : undefined,
+      defaultVersion:
+        typeof entry.defaultVersion === "string" ? entry.defaultVersion : undefined,
+      originUrl: typeof entry.originUrl === "string" ? entry.originUrl : undefined,
+      createdAt:
+        typeof entry.createdAt === "string" ? entry.createdAt : timestamp,
+      updatedAt:
+        typeof entry.updatedAt === "string" ? entry.updatedAt : timestamp,
+    };
+  });
 
   const normalizedTasks = tasks.map((task) => {
     const agentId = task.agentId || `legacy-agent-${task.id}`;
@@ -67,7 +111,7 @@ function normalizeStore(parsed: Partial<AppStore>) {
   return {
     agents,
     contextSets: parsed.contextSets ?? [],
-    skills: parsed.skills ?? [],
+    skills,
     tasks: normalizedTasks,
   } satisfies AppStore;
 }
