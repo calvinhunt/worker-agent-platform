@@ -130,7 +130,6 @@ export async function ensureTaskReady(
               {
                 type: "skill_reference" as const,
                 skill_id: skill.openaiSkillId,
-                version: skill.defaultVersion,
               },
             ]
           : [],
