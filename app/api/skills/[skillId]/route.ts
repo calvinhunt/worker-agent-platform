@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { NextResponse } from "next/server";
 
+import { buildUpdatedAdminSettings } from "@/lib/settings";
 import { getManagedSkillsRoot, getSkillStorageRoot } from "@/lib/skills";
 import { readStore, writeStore } from "@/lib/store";
 
@@ -21,6 +22,13 @@ export async function DELETE(
   }
 
   store.skills = store.skills.filter((entry) => entry.id !== skillId);
+  store.settings = buildUpdatedAdminSettings(
+    store.settings,
+    {
+      baselineSkillIds: store.settings.baselineSkillIds.filter((entry) => entry !== skillId),
+    },
+    { validSkillIds: new Set(store.skills.map((entry) => entry.id)) },
+  );
   store.agents = store.agents.map((agent) => ({
     ...agent,
     skillIds: agent.skillIds.filter((entry) => entry !== skillId),

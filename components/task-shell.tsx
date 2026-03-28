@@ -3,6 +3,8 @@
 import { FormEvent, startTransition, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
+  AdminAgentDefaults,
+  AdminSettings,
   Agent,
   ClientStatePayload,
   ContextSet,
@@ -50,7 +52,87 @@ type SkillsPageResponse = {
   catalogError?: string;
 };
 
+type AdminSettingsDraft = {
+  containerDefaults: {
+    memoryLimit: NonNullable<AdminSettings["containerDefaults"]["memoryLimit"]> | "";
+    expiresAfterMinutes: string;
+    networkPolicyType: "disabled" | "allowlist";
+    allowedDomainsText: string;
+  };
+  agentDefaults: {
+    model: string;
+    maxTurns: string;
+    store: boolean;
+    parallelToolCalls: boolean;
+    temperature: string;
+    topP: string;
+    maxOutputTokens: string;
+    maxToolCalls: string;
+    serviceTier: NonNullable<AdminAgentDefaults["serviceTier"]> | "";
+    truncation: NonNullable<AdminAgentDefaults["truncation"]> | "";
+    promptCacheRetention: NonNullable<AdminAgentDefaults["promptCacheRetention"]> | "";
+    reasoningEffort: NonNullable<AdminAgentDefaults["reasoningEffort"]> | "";
+    reasoningSummary: NonNullable<AdminAgentDefaults["reasoningSummary"]> | "";
+    textVerbosity: NonNullable<AdminAgentDefaults["textVerbosity"]> | "";
+  };
+  baselineSkillIds: string[];
+  updatedAt: string;
+};
+
 /* ── Helpers ───────────────────────────────────────────────────── */
+
+const memoryLimitOptions = [
+  { value: "", label: "OpenAI default (1g)" },
+  { value: "1g", label: "1 GB" },
+  { value: "4g", label: "4 GB" },
+  { value: "16g", label: "16 GB" },
+  { value: "64g", label: "64 GB" },
+] as const;
+
+const serviceTierOptions = [
+  { value: "", label: "API default" },
+  { value: "auto", label: "Auto" },
+  { value: "default", label: "Default" },
+  { value: "flex", label: "Flex" },
+  { value: "scale", label: "Scale" },
+  { value: "priority", label: "Priority" },
+] as const;
+
+const truncationOptions = [
+  { value: "", label: "API default" },
+  { value: "auto", label: "Auto" },
+  { value: "disabled", label: "Disabled" },
+] as const;
+
+const promptCacheRetentionOptions = [
+  { value: "", label: "Model default" },
+  { value: "in-memory", label: "In-memory" },
+  { value: "24h", label: "24 hours" },
+] as const;
+
+const reasoningEffortOptions = [
+  { value: "", label: "Model default" },
+  { value: "none", label: "None" },
+  { value: "minimal", label: "Minimal" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra high" },
+] as const;
+
+const reasoningSummaryOptions = [
+  { value: "", label: "Model default" },
+  { value: "auto", label: "Auto" },
+  { value: "concise", label: "Concise" },
+  { value: "detailed", label: "Detailed" },
+] as const;
+
+const textVerbosityOptions = [
+  { value: "", label: "Model default" },
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+] as const;
 
 const directoryPickerProps = { webkitdirectory: "", directory: "" } as Record<string, string>;
 
@@ -102,6 +184,104 @@ function createActivityEntry(
   detail: string,
 ): ActivityEntry {
   return { id, kind, label, detail };
+}
+
+function formatDomainsForTextarea(settings: AdminSettings) {
+  return settings.containerDefaults.networkPolicy.type === "allowlist"
+    ? settings.containerDefaults.networkPolicy.allowedDomains.join("\n")
+    : "";
+}
+
+function parseAdminNumber(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? Number(trimmed) : null;
+}
+
+function parseAdminInteger(value: string) {
+  const trimmed = value.trim();
+  return trimmed ? Number.parseInt(trimmed, 10) : null;
+}
+
+function parseAllowedDomains(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[\n,]/)
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function createAdminDraft(settings: AdminSettings): AdminSettingsDraft {
+  return {
+    containerDefaults: {
+      memoryLimit: settings.containerDefaults.memoryLimit ?? "",
+      expiresAfterMinutes: String(settings.containerDefaults.expiresAfterMinutes),
+      networkPolicyType: settings.containerDefaults.networkPolicy.type,
+      allowedDomainsText: formatDomainsForTextarea(settings),
+    },
+    agentDefaults: {
+      model: settings.agentDefaults.model,
+      maxTurns: String(settings.agentDefaults.maxTurns),
+      store: settings.agentDefaults.store,
+      parallelToolCalls: settings.agentDefaults.parallelToolCalls,
+      temperature:
+        settings.agentDefaults.temperature == null ? "" : String(settings.agentDefaults.temperature),
+      topP: settings.agentDefaults.topP == null ? "" : String(settings.agentDefaults.topP),
+      maxOutputTokens:
+        settings.agentDefaults.maxOutputTokens == null
+          ? ""
+          : String(settings.agentDefaults.maxOutputTokens),
+      maxToolCalls:
+        settings.agentDefaults.maxToolCalls == null
+          ? ""
+          : String(settings.agentDefaults.maxToolCalls),
+      serviceTier: settings.agentDefaults.serviceTier ?? "",
+      truncation: settings.agentDefaults.truncation ?? "",
+      promptCacheRetention: settings.agentDefaults.promptCacheRetention ?? "",
+      reasoningEffort: settings.agentDefaults.reasoningEffort ?? "",
+      reasoningSummary: settings.agentDefaults.reasoningSummary ?? "",
+      textVerbosity: settings.agentDefaults.textVerbosity ?? "",
+    },
+    baselineSkillIds: [...settings.baselineSkillIds],
+    updatedAt: settings.updatedAt,
+  };
+}
+
+function buildAdminPayload(draft: AdminSettingsDraft): Partial<AdminSettings> {
+  return {
+    containerDefaults: {
+      memoryLimit: draft.containerDefaults.memoryLimit || null,
+      expiresAfterMinutes: parseAdminInteger(draft.containerDefaults.expiresAfterMinutes) ?? 20,
+      networkPolicy:
+        draft.containerDefaults.networkPolicyType === "allowlist"
+          ? {
+              type: "allowlist",
+              allowedDomains: parseAllowedDomains(draft.containerDefaults.allowedDomainsText),
+            }
+          : {
+              type: "disabled",
+            },
+    },
+    agentDefaults: {
+      model: draft.agentDefaults.model.trim(),
+      maxTurns: parseAdminInteger(draft.agentDefaults.maxTurns) ?? 16,
+      store: draft.agentDefaults.store,
+      parallelToolCalls: draft.agentDefaults.parallelToolCalls,
+      temperature: parseAdminNumber(draft.agentDefaults.temperature),
+      topP: parseAdminNumber(draft.agentDefaults.topP),
+      maxOutputTokens: parseAdminInteger(draft.agentDefaults.maxOutputTokens),
+      maxToolCalls: parseAdminInteger(draft.agentDefaults.maxToolCalls),
+      serviceTier: draft.agentDefaults.serviceTier || null,
+      truncation: draft.agentDefaults.truncation || null,
+      promptCacheRetention: draft.agentDefaults.promptCacheRetention || null,
+      reasoningEffort: draft.agentDefaults.reasoningEffort || null,
+      reasoningSummary: draft.agentDefaults.reasoningSummary || null,
+      textVerbosity: draft.agentDefaults.textVerbosity || null,
+    },
+    baselineSkillIds: draft.baselineSkillIds,
+  };
 }
 
 async function getJson<T>(url: string, init?: RequestInit) {
@@ -247,7 +427,7 @@ const statusPillStyle: Record<string, string> = {
 
 export function TaskShell() {
   const [state, setState] = useState<ClientStatePayload | null>(null);
-  const [currentPage, setCurrentPage] = useState<"agents" | "skills">("agents");
+  const [currentPage, setCurrentPage] = useState<"agents" | "skills" | "admin">("agents");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [expandedAgents, setExpandedAgents] = useState<Record<string, boolean>>({});
@@ -277,6 +457,10 @@ export function TaskShell() {
   const [prompt, setPrompt] = useState("");
   const [runState, setRunState] = useState<RunState>(emptyRunState);
   const [stateRefreshError, setStateRefreshError] = useState<string | null>(null);
+  const [adminDraft, setAdminDraft] = useState<AdminSettingsDraft | null>(null);
+  const [adminBusy, setAdminBusy] = useState(false);
+  const [adminError, setAdminError] = useState<string | null>(null);
+  const [adminNotice, setAdminNotice] = useState<string | null>(null);
   const conversationEndRef = useRef<HTMLDivElement>(null);
   const activityEntryIdRef = useRef(0);
 
@@ -307,12 +491,47 @@ export function TaskShell() {
     [selectedAgent, state],
   );
 
+  const baselineSkillIdSet = useMemo(
+    () => new Set(state?.settings.baselineSkillIds ?? []),
+    [state?.settings.baselineSkillIds],
+  );
+
+  const baselineSkills = useMemo(
+    () => state?.skills.filter((skill) => baselineSkillIdSet.has(skill.id)) ?? [],
+    [baselineSkillIdSet, state],
+  );
+
+  const selectableSkills = useMemo(
+    () => state?.skills.filter((skill) => !baselineSkillIdSet.has(skill.id)) ?? [],
+    [baselineSkillIdSet, state],
+  );
+
+  const selectedAgentSkillIds = useMemo(
+    () =>
+      selectedAgent
+        ? Array.from(
+            new Set([...(state?.settings.baselineSkillIds ?? []), ...selectedAgent.skillIds]),
+          )
+        : [],
+    [selectedAgent, state],
+  );
+
   const selectedSkills = useMemo(
     () =>
       selectedAgent
-        ? state?.skills.filter((s) => selectedAgent.skillIds.includes(s.id)) ?? []
+        ? state?.skills.filter((skill) => selectedAgentSkillIds.includes(skill.id)) ?? []
         : [],
-    [selectedAgent, state],
+    [selectedAgent, selectedAgentSkillIds, state],
+  );
+
+  const selectedBaselineSkills = useMemo(
+    () => selectedSkills.filter((skill) => baselineSkillIdSet.has(skill.id)),
+    [baselineSkillIdSet, selectedSkills],
+  );
+
+  const selectedAdditionalSkills = useMemo(
+    () => selectedSkills.filter((skill) => !baselineSkillIdSet.has(skill.id)),
+    [baselineSkillIdSet, selectedSkills],
   );
 
   const selectedAgentTasks = useMemo(
@@ -324,7 +543,7 @@ export function TaskShell() {
     const counts = new Map<string, number>();
 
     for (const agent of state?.agents ?? []) {
-      for (const skillId of agent.skillIds) {
+      for (const skillId of new Set([...(state?.settings.baselineSkillIds ?? []), ...agent.skillIds])) {
         counts.set(skillId, (counts.get(skillId) ?? 0) + 1);
       }
     }
@@ -342,12 +561,25 @@ export function TaskShell() {
     [state],
   );
 
+  const installedSkillSignature = useMemo(
+    () =>
+      [...(state?.skills ?? [])]
+        .map((skill) => skill.id)
+        .sort()
+        .join("|"),
+    [state?.skills],
+  );
+
   async function refreshState(preferred?: { agentId?: string | null; taskId?: string | null }) {
     try {
       const nextState = await getJson<ClientStatePayload>("/api/state");
       setState(nextState);
       setSelectedSkillIds((current) =>
-        current.filter((skillId) => nextState.skills.some((skill) => skill.id === skillId)),
+        current.filter(
+          (skillId) =>
+            nextState.skills.some((skill) => skill.id === skillId) &&
+            !nextState.settings.baselineSkillIds.includes(skillId),
+        ),
       );
       setStateRefreshError(null);
 
@@ -437,6 +669,14 @@ export function TaskShell() {
 
     void refreshSkillsCatalog();
   }, [catalogInitialized, catalogLoading, currentPage]);
+
+  useEffect(() => {
+    if (!state) {
+      return;
+    }
+
+    setAdminDraft(createAdminDraft(state.settings));
+  }, [installedSkillSignature, state?.settings.updatedAt]);
 
   useEffect(() => {
     conversationEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -599,6 +839,45 @@ export function TaskShell() {
     }
   }
 
+  async function handleSaveAdminSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!adminDraft) {
+      return;
+    }
+
+    setAdminBusy(true);
+    setAdminError(null);
+    setAdminNotice(null);
+
+    try {
+      const nextSettings = await getJson<AdminSettings>("/api/admin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(buildAdminPayload(adminDraft)),
+      });
+
+      setState((current) =>
+        current
+          ? {
+              ...current,
+              settings: nextSettings,
+              model: nextSettings.agentDefaults.model,
+            }
+          : current,
+      );
+      setAdminDraft(createAdminDraft(nextSettings));
+      setSelectedSkillIds((current) =>
+        current.filter((skillId) => !nextSettings.baselineSkillIds.includes(skillId)),
+      );
+      setAdminNotice("Admin settings saved.");
+    } catch (error) {
+      setAdminError(error instanceof Error ? error.message : "Failed to save admin settings.");
+    } finally {
+      setAdminBusy(false);
+    }
+  }
+
   async function handleRunPrompt(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedTask || !prompt.trim()) return;
@@ -720,6 +999,58 @@ export function TaskShell() {
     setShowAgentConfig(false);
   }
 
+  function openAdminPage() {
+    setCurrentPage("admin");
+    setShowAgentConfig(false);
+  }
+
+  function updateAdminContainerDraft(
+    updates: Partial<AdminSettingsDraft["containerDefaults"]>,
+  ) {
+    setAdminDraft((current) =>
+      current
+        ? {
+            ...current,
+            containerDefaults: {
+              ...current.containerDefaults,
+              ...updates,
+            },
+          }
+        : current,
+    );
+    setAdminError(null);
+    setAdminNotice(null);
+  }
+
+  function updateAdminAgentDraft(updates: Partial<AdminSettingsDraft["agentDefaults"]>) {
+    setAdminDraft((current) =>
+      current
+        ? {
+            ...current,
+            agentDefaults: {
+              ...current.agentDefaults,
+              ...updates,
+            },
+          }
+        : current,
+    );
+    setAdminError(null);
+    setAdminNotice(null);
+  }
+
+  function updateAdminBaselineSkills(updater: (current: string[]) => string[]) {
+    setAdminDraft((current) =>
+      current
+        ? {
+            ...current,
+            baselineSkillIds: updater(current.baselineSkillIds),
+          }
+        : current,
+    );
+    setAdminError(null);
+    setAdminNotice(null);
+  }
+
   function selectAgent(agentId: string) {
     setCurrentPage("agents");
     setSelectedAgentId(agentId);
@@ -790,7 +1121,7 @@ export function TaskShell() {
         </div>
 
         <div className="px-4 pt-4">
-          <div className="grid grid-cols-2 gap-2 rounded-xl bg-gray-800/70 p-1">
+          <div className="grid grid-cols-3 gap-2 rounded-xl bg-gray-800/70 p-1">
             <button
               onClick={() => setCurrentPage("agents")}
               className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
@@ -810,6 +1141,16 @@ export function TaskShell() {
               }`}
             >
               Skills
+            </button>
+            <button
+              onClick={openAdminPage}
+              className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors ${
+                currentPage === "admin"
+                  ? "bg-white text-gray-900 shadow-sm"
+                  : "text-gray-300 hover:text-white"
+              }`}
+            >
+              Admin
             </button>
           </div>
         </div>
@@ -918,7 +1259,7 @@ export function TaskShell() {
                 })}
               </ul>
             </>
-          ) : (
+          ) : currentPage === "skills" ? (
             <div className="space-y-4 px-1 pt-3">
               <div className="rounded-xl border border-white/10 bg-gray-800/70 px-4 py-4">
                 <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
@@ -926,7 +1267,7 @@ export function TaskShell() {
                 </p>
                 <p className="mt-2 text-2xl font-semibold text-white">{state.skills.length}</p>
                 <p className="mt-1 text-xs leading-relaxed text-gray-400">
-                  Create skills with a `SKILL.md` file or install them from the curated OpenAI repository, then attach only the ones each agent should use.
+                  Create skills with a `SKILL.md` file, set a baseline set for every agent, and let agents opt into extra installed skills only when needed.
                 </p>
               </div>
 
@@ -941,10 +1282,15 @@ export function TaskShell() {
                         key={skill.id}
                         className="rounded-lg border border-white/10 bg-gray-800/60 px-3 py-2"
                       >
-                        <p className="truncate text-sm font-medium text-white">{skill.name}</p>
-                        <p className="mt-1 text-xs text-gray-400">
-                          {formatSkillSource(skill.source)}
-                        </p>
+                        <div className="flex items-center gap-2">
+                          <p className="truncate text-sm font-medium text-white">{skill.name}</p>
+                          {baselineSkillIdSet.has(skill.id) && (
+                            <span className="rounded-full bg-indigo-500/15 px-2 py-0.5 text-[10px] font-medium text-indigo-200">
+                              Baseline
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-xs text-gray-400">{formatSkillSource(skill.source)}</p>
                       </div>
                     ))
                   ) : (
@@ -953,6 +1299,52 @@ export function TaskShell() {
                     </p>
                   )}
                 </div>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4 px-1 pt-3">
+              <div className="rounded-xl border border-white/10 bg-gray-800/70 px-4 py-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Container Defaults
+                </p>
+                <p className="mt-2 text-sm font-semibold text-white">
+                  {state.settings.containerDefaults.networkPolicy.type === "allowlist"
+                    ? "Allowlisted network"
+                    : "Network disabled"}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-gray-400">
+                  Memory {state.settings.containerDefaults.memoryLimit || "OpenAI default"} •
+                  expires after {state.settings.containerDefaults.expiresAfterMinutes} minutes of
+                  inactivity
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-gray-800/60 px-4 py-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Agent Defaults
+                </p>
+                <p className="mt-2 text-sm font-semibold text-white">
+                  {state.settings.agentDefaults.model}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-gray-400">
+                  {state.settings.agentDefaults.maxTurns} max turns •{" "}
+                  {state.settings.agentDefaults.store ? "stored" : "not stored"} •{" "}
+                  {state.settings.agentDefaults.parallelToolCalls
+                    ? "parallel tool calls on"
+                    : "parallel tool calls off"}
+                </p>
+              </div>
+
+              <div className="rounded-xl border border-white/10 bg-gray-800/60 px-4 py-4">
+                <p className="text-xs font-medium uppercase tracking-wide text-gray-500">
+                  Baseline Skills
+                </p>
+                <p className="mt-2 text-2xl font-semibold text-white">
+                  {state.settings.baselineSkillIds.length}
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-gray-400">
+                  These skills are automatically available to every agent.
+                </p>
               </div>
             </div>
           )}
@@ -983,7 +1375,14 @@ export function TaskShell() {
               <div>
                 <h1 className="text-sm font-semibold text-gray-900">Skills</h1>
                 <p className="text-xs text-gray-500">
-                  Manage installed skills and choose which agents use them.
+                  Manage installed skills and choose which ones are baseline or agent-specific.
+                </p>
+              </div>
+            ) : currentPage === "admin" ? (
+              <div>
+                <h1 className="text-sm font-semibold text-gray-900">Admin</h1>
+                <p className="text-xs text-gray-500">
+                  Configure container defaults, runtime settings, and site-wide baseline skills.
                 </p>
               </div>
             ) : selectedAgent ? (
@@ -1037,6 +1436,558 @@ export function TaskShell() {
               <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 {stateRefreshError}
               </div>
+            )}
+
+            {currentPage === "admin" && adminDraft && (
+              <form className="space-y-6" onSubmit={handleSaveAdminSettings}>
+                {adminError && (
+                  <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+                    {adminError}
+                  </div>
+                )}
+
+                {adminNotice && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                    {adminNotice}
+                  </div>
+                )}
+
+                <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+                  <div className="space-y-6">
+                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                      <div className="border-b border-gray-100 bg-gray-50/50 px-6 py-4">
+                        <h2 className="text-base font-semibold text-gray-900">
+                          Container Defaults
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-500">
+                          Set the default OpenAI container profile for hosted-shell tasks, including
+                          memory, inactivity expiry, and network access policy.
+                        </p>
+                      </div>
+
+                      <div className="space-y-5 px-6 py-5">
+                        <div className="grid gap-5 md:grid-cols-2">
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Memory limit
+                            </label>
+                            <select
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              value={adminDraft.containerDefaults.memoryLimit ?? ""}
+                              onChange={(event) =>
+                                updateAdminContainerDraft({
+                                  memoryLimit: event.target.value as AdminSettingsDraft["containerDefaults"]["memoryLimit"],
+                                })
+                              }
+                            >
+                              {memoryLimitOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Inactivity expiry (minutes)
+                            </label>
+                            <input
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              inputMode="numeric"
+                              min={1}
+                              onChange={(event) =>
+                                updateAdminContainerDraft({
+                                  expiresAfterMinutes: event.target.value,
+                                })
+                              }
+                              type="number"
+                              value={adminDraft.containerDefaults.expiresAfterMinutes}
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700">
+                            Network policy
+                          </label>
+                          <select
+                            className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                            value={adminDraft.containerDefaults.networkPolicyType}
+                            onChange={(event) =>
+                              updateAdminContainerDraft({
+                                networkPolicyType: event.target.value as "disabled" | "allowlist",
+                              })
+                            }
+                          >
+                            <option value="disabled">Disabled</option>
+                            <option value="allowlist">Allowlisted domains only</option>
+                          </select>
+                          <p className="mt-2 text-xs leading-relaxed text-gray-500">
+                            OpenAI hosted containers start with network disabled by default. Use
+                            an allowlist only for domains the task explicitly needs.
+                          </p>
+                        </div>
+
+                        {adminDraft.containerDefaults.networkPolicyType === "allowlist" && (
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Allowed domains
+                            </label>
+                            <textarea
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminContainerDraft({
+                                  allowedDomainsText: event.target.value,
+                                })
+                              }
+                              placeholder={"api.buildkite.com\nregistry.npmjs.org"}
+                              rows={5}
+                              value={adminDraft.containerDefaults.allowedDomainsText}
+                            />
+                            <p className="mt-2 text-xs text-gray-500">
+                              Enter one domain per line. Protocols and paths are ignored when the
+                              server normalizes the allowlist.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                      <div className="border-b border-gray-100 bg-gray-50/50 px-6 py-4">
+                        <h2 className="text-base font-semibold text-gray-900">
+                          Agent Runtime Defaults
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-500">
+                          Configure the base model and the main Responses API and Agents SDK
+                          options new task runs should inherit by default.
+                        </p>
+                      </div>
+
+                      <div className="space-y-5 px-6 py-5">
+                        <div className="grid gap-5 md:grid-cols-2">
+                          <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-gray-700">
+                              Model
+                            </label>
+                            <input
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm placeholder:text-gray-400 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminAgentDraft({ model: event.target.value })
+                              }
+                              placeholder="gpt-5.4"
+                              value={adminDraft.agentDefaults.model}
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Max turns
+                            </label>
+                            <input
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              inputMode="numeric"
+                              min={1}
+                              onChange={(event) =>
+                                updateAdminAgentDraft({ maxTurns: event.target.value })
+                              }
+                              type="number"
+                              value={adminDraft.agentDefaults.maxTurns}
+                            />
+                          </div>
+
+                          <div className="rounded-xl border border-gray-200 bg-gray-50/70 px-4 py-3">
+                            <label className="flex items-start gap-3">
+                              <input
+                                checked={adminDraft.agentDefaults.store}
+                                className="mt-0.5 size-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                onChange={(event) =>
+                                  updateAdminAgentDraft({ store: event.target.checked })
+                                }
+                                type="checkbox"
+                              />
+                              <span>
+                                <span className="block text-sm font-medium text-gray-700">
+                                  Store responses
+                                </span>
+                                <span className="mt-1 block text-xs leading-relaxed text-gray-500">
+                                  Keep Responses API storage enabled so traces and history remain
+                                  available across turns.
+                                </span>
+                              </span>
+                            </label>
+                          </div>
+
+                          <div className="rounded-xl border border-gray-200 bg-gray-50/70 px-4 py-3">
+                            <label className="flex items-start gap-3">
+                              <input
+                                checked={adminDraft.agentDefaults.parallelToolCalls}
+                                className="mt-0.5 size-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                onChange={(event) =>
+                                  updateAdminAgentDraft({
+                                    parallelToolCalls: event.target.checked,
+                                  })
+                                }
+                                type="checkbox"
+                              />
+                              <span>
+                                <span className="block text-sm font-medium text-gray-700">
+                                  Parallel tool calls
+                                </span>
+                                <span className="mt-1 block text-xs leading-relaxed text-gray-500">
+                                  Applies when hosted-shell tools are available. Standard runs still
+                                  force this off when there are no tools.
+                                </span>
+                              </span>
+                            </label>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Temperature
+                            </label>
+                            <input
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              max={2}
+                              min={0}
+                              onChange={(event) =>
+                                updateAdminAgentDraft({ temperature: event.target.value })
+                              }
+                              placeholder="Default"
+                              step="0.1"
+                              type="number"
+                              value={adminDraft.agentDefaults.temperature}
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Top P
+                            </label>
+                            <input
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              max={1}
+                              min={0}
+                              onChange={(event) =>
+                                updateAdminAgentDraft({ topP: event.target.value })
+                              }
+                              placeholder="Default"
+                              step="0.05"
+                              type="number"
+                              value={adminDraft.agentDefaults.topP}
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Max output tokens
+                            </label>
+                            <input
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              inputMode="numeric"
+                              min={1}
+                              onChange={(event) =>
+                                updateAdminAgentDraft({
+                                  maxOutputTokens: event.target.value,
+                                })
+                              }
+                              placeholder="Default"
+                              type="number"
+                              value={adminDraft.agentDefaults.maxOutputTokens}
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Max tool calls
+                            </label>
+                            <input
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              inputMode="numeric"
+                              min={1}
+                              onChange={(event) =>
+                                updateAdminAgentDraft({ maxToolCalls: event.target.value })
+                              }
+                              placeholder="Default"
+                              type="number"
+                              value={adminDraft.agentDefaults.maxToolCalls}
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Service tier
+                            </label>
+                            <select
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminAgentDraft({
+                                  serviceTier: event.target.value as AdminSettingsDraft["agentDefaults"]["serviceTier"],
+                                })
+                              }
+                              value={adminDraft.agentDefaults.serviceTier}
+                            >
+                              {serviceTierOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Truncation
+                            </label>
+                            <select
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminAgentDraft({
+                                  truncation: event.target.value as AdminSettingsDraft["agentDefaults"]["truncation"],
+                                })
+                              }
+                              value={adminDraft.agentDefaults.truncation}
+                            >
+                              {truncationOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Prompt cache retention
+                            </label>
+                            <select
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminAgentDraft({
+                                  promptCacheRetention:
+                                    event.target.value as AdminSettingsDraft["agentDefaults"]["promptCacheRetention"],
+                                })
+                              }
+                              value={adminDraft.agentDefaults.promptCacheRetention}
+                            >
+                              {promptCacheRetentionOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Reasoning effort
+                            </label>
+                            <select
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminAgentDraft({
+                                  reasoningEffort:
+                                    event.target.value as AdminSettingsDraft["agentDefaults"]["reasoningEffort"],
+                                })
+                              }
+                              value={adminDraft.agentDefaults.reasoningEffort}
+                            >
+                              {reasoningEffortOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Reasoning summary
+                            </label>
+                            <select
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminAgentDraft({
+                                  reasoningSummary:
+                                    event.target.value as AdminSettingsDraft["agentDefaults"]["reasoningSummary"],
+                                })
+                              }
+                              value={adminDraft.agentDefaults.reasoningSummary}
+                            >
+                              {reasoningSummaryOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-sm font-medium text-gray-700">
+                              Text verbosity
+                            </label>
+                            <select
+                              className="mt-1.5 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                              onChange={(event) =>
+                                updateAdminAgentDraft({
+                                  textVerbosity:
+                                    event.target.value as AdminSettingsDraft["agentDefaults"]["textVerbosity"],
+                                })
+                              }
+                              value={adminDraft.agentDefaults.textVerbosity}
+                            >
+                              {textVerbosityOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-6">
+                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                      <div className="border-b border-gray-100 bg-gray-50/50 px-6 py-4">
+                        <h2 className="text-base font-semibold text-gray-900">
+                          Baseline Skills
+                        </h2>
+                        <p className="mt-1 text-sm text-gray-500">
+                          Baseline skills are available to every agent automatically and no longer
+                          need to be selected on agent creation.
+                        </p>
+                      </div>
+
+                      <div className="space-y-4 px-6 py-5">
+                        {state.skills.length > 0 ? (
+                          <div className="space-y-3">
+                            {state.skills.map((skill) => {
+                              const checked = adminDraft.baselineSkillIds.includes(skill.id);
+
+                              return (
+                                <label
+                                  key={skill.id}
+                                  className={`flex cursor-pointer items-start gap-3 rounded-xl border px-4 py-3 transition-colors ${
+                                    checked
+                                      ? "border-indigo-200 bg-indigo-50/60"
+                                      : "border-gray-200 bg-white hover:bg-gray-50"
+                                  }`}
+                                >
+                                  <input
+                                    checked={checked}
+                                    className="mt-0.5 size-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                                    onChange={(event) =>
+                                      updateAdminBaselineSkills((current) =>
+                                        event.target.checked
+                                          ? [...current, skill.id]
+                                          : current.filter((skillId) => skillId !== skill.id),
+                                      )
+                                    }
+                                    type="checkbox"
+                                  />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="flex flex-wrap items-center gap-2">
+                                      <span className="text-sm font-medium text-gray-800">
+                                        {skill.name}
+                                      </span>
+                                      <span className="rounded-full bg-white px-2 py-0.5 text-[11px] font-medium text-gray-500 ring-1 ring-gray-200">
+                                        {formatSkillSource(skill.source)}
+                                      </span>
+                                    </span>
+                                    <span className="mt-1 block text-sm leading-relaxed text-gray-500">
+                                      {skill.description || "No description provided."}
+                                    </span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-5 py-6">
+                            <p className="text-sm font-medium text-gray-700">
+                              No installed skills available yet
+                            </p>
+                            <p className="mt-1 text-sm text-gray-500">
+                              Install or create skills first, then mark the ones every agent should
+                              inherit by default.
+                            </p>
+                            <button
+                              type="button"
+                              onClick={openSkillsPage}
+                              className="mt-3 inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 transition-colors hover:bg-gray-50"
+                            >
+                              <IconBolt className="size-4 text-gray-400" />
+                              Open Skills
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                      <div className="border-b border-gray-100 bg-gray-50/50 px-6 py-4">
+                        <h2 className="text-base font-semibold text-gray-900">Summary</h2>
+                      </div>
+                      <div className="space-y-3 px-6 py-5 text-sm text-gray-600">
+                        <p>
+                          Current model:{" "}
+                          <span className="font-medium text-gray-800">
+                            {adminDraft.agentDefaults.model || "Unset"}
+                          </span>
+                        </p>
+                        <p>
+                          Container networking:{" "}
+                          <span className="font-medium text-gray-800">
+                            {adminDraft.containerDefaults.networkPolicyType === "allowlist"
+                              ? `${parseAllowedDomains(
+                                  adminDraft.containerDefaults.allowedDomainsText,
+                                ).length} allowed domain${
+                                  parseAllowedDomains(
+                                    adminDraft.containerDefaults.allowedDomainsText,
+                                  ).length === 1
+                                    ? ""
+                                    : "s"
+                                }`
+                              : "disabled"}
+                          </span>
+                        </p>
+                        <p>
+                          Baseline skills:{" "}
+                          <span className="font-medium text-gray-800">
+                            {adminDraft.baselineSkillIds.length}
+                          </span>
+                        </p>
+                        <p className="text-xs text-gray-500">
+                          Last saved {formatDateTime(state.settings.updatedAt)}.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between rounded-xl border border-gray-200 bg-white px-6 py-4 shadow-sm">
+                  <p className="text-sm text-gray-500">
+                    These defaults apply to future task runs and to new agent creation behavior.
+                  </p>
+                  <button
+                    type="submit"
+                    disabled={adminBusy}
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-500 disabled:opacity-50"
+                  >
+                    {adminBusy ? (
+                      <>
+                        <div className="size-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+                        Saving...
+                      </>
+                    ) : (
+                      "Save Admin Settings"
+                    )}
+                  </button>
+                </div>
+              </form>
             )}
 
             {currentPage === "skills" && (
@@ -1116,7 +2067,8 @@ export function TaskShell() {
                             Install Curated Skills
                           </h2>
                           <p className="mt-1 text-sm text-gray-500">
-                            Install from the OpenAI curated skills repository and make them available to agents during creation.
+                            Install from the OpenAI curated skills repository, then decide whether
+                            each skill should be baseline for every agent or optional per agent.
                           </p>
                         </div>
                         <button
@@ -1218,7 +2170,8 @@ export function TaskShell() {
                             Installed Skills
                           </h2>
                           <p className="mt-1 text-sm text-gray-500">
-                            Agents can attach any subset of these installed skills.
+                            Baseline skills are automatically available to every agent. All other
+                            installed skills can be attached selectively.
                           </p>
                         </div>
                         <span className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600">
@@ -1238,6 +2191,7 @@ export function TaskShell() {
                         <div className="grid gap-4 lg:grid-cols-2">
                           {state.skills.map((skill) => {
                             const attachedAgents = skillUsageCounts.get(skill.id) ?? 0;
+                            const isBaseline = baselineSkillIdSet.has(skill.id);
 
                             return (
                               <div
@@ -1256,6 +2210,11 @@ export function TaskShell() {
                                       <span className="rounded-full bg-gray-100 px-2.5 py-1 text-[11px] font-medium text-gray-600">
                                         {skill.format}
                                       </span>
+                                      {isBaseline && (
+                                        <span className="rounded-full bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700">
+                                          Baseline
+                                        </span>
+                                      )}
                                     </div>
                                     <p className="mt-2 text-sm leading-relaxed text-gray-600">
                                       {skill.description || "No description provided."}
@@ -1274,6 +2233,7 @@ export function TaskShell() {
                                 <div className="mt-4 flex flex-wrap gap-2 text-xs text-gray-500">
                                   <span className="rounded-full bg-gray-50 px-3 py-1 ring-1 ring-gray-200">
                                     {attachedAgents} agent{attachedAgents === 1 ? "" : "s"}
+                                    {isBaseline ? " by default" : ""}
                                   </span>
                                   <span className="rounded-full bg-gray-50 px-3 py-1 ring-1 ring-gray-200">
                                     {skill.files.length || 1} file{skill.files.length === 1 ? "" : "s"}
@@ -1342,7 +2302,8 @@ export function TaskShell() {
                   <div className="border-b border-gray-100 bg-gray-50/50 px-6 py-4">
                     <h2 className="text-base font-semibold text-gray-900">New Agent</h2>
                     <p className="mt-1 text-sm text-gray-500">
-                      Define context, instructions, and choose which installed skills this agent should use.
+                      Define context, instructions, and choose any additional installed skills this
+                      agent should use beyond the baseline set.
                     </p>
                   </div>
 
@@ -1411,50 +2372,83 @@ export function TaskShell() {
 
                       {state.skills.length > 0 ? (
                         <div>
-                          <label className="block text-sm font-medium text-gray-700">
-                            Installed skills
-                          </label>
-                          <p className="mt-1 text-sm text-gray-500">
-                            Select only the installed skills this agent should have available.
-                          </p>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {state.skills.map((skill) => {
-                              const checked = selectedSkillIds.includes(skill.id);
-                              return (
-                                <label
-                                  key={skill.id}
-                                  className={`
-                                    inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors
-                                    ${checked
-                                      ? "border-indigo-200 bg-indigo-50 text-indigo-700"
-                                      : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
-                                    }
-                                  `}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    className="sr-only"
-                                    checked={checked}
-                                    onChange={(e) =>
-                                      setSelectedSkillIds((cur) =>
-                                        e.target.checked
-                                          ? [...cur, skill.id]
-                                          : cur.filter((id) => id !== skill.id),
-                                      )
-                                    }
-                                  />
-                                  <IconBolt className="size-3.5" />
-                                  {skill.name}
-                                </label>
-                              );
-                            })}
-                          </div>
+                          {baselineSkills.length > 0 && (
+                            <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-4">
+                              <label className="block text-sm font-medium text-indigo-900">
+                                Baseline skills
+                              </label>
+                              <p className="mt-1 text-sm text-indigo-700">
+                                These skills are configured in Admin and are always available to
+                                every agent.
+                              </p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {baselineSkills.map((skill) => (
+                                  <span
+                                    key={skill.id}
+                                    className="inline-flex items-center gap-2 rounded-full border border-indigo-200 bg-white px-3 py-1.5 text-sm font-medium text-indigo-700"
+                                  >
+                                    <IconBolt className="size-3.5" />
+                                    {skill.name}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {selectableSkills.length > 0 ? (
+                            <div className={baselineSkills.length > 0 ? "mt-4" : ""}>
+                              <label className="block text-sm font-medium text-gray-700">
+                                Additional installed skills
+                              </label>
+                              <p className="mt-1 text-sm text-gray-500">
+                                Select any extra installed skills this agent should have beyond the
+                                site-wide baseline.
+                              </p>
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {selectableSkills.map((skill) => {
+                                  const checked = selectedSkillIds.includes(skill.id);
+                                  return (
+                                    <label
+                                      key={skill.id}
+                                      className={`
+                                        inline-flex cursor-pointer items-center gap-2 rounded-full border px-3 py-1.5 text-sm transition-colors
+                                        ${checked
+                                          ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                                          : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"
+                                        }
+                                      `}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        className="sr-only"
+                                        checked={checked}
+                                        onChange={(e) =>
+                                          setSelectedSkillIds((cur) =>
+                                            e.target.checked
+                                              ? [...cur, skill.id]
+                                              : cur.filter((id) => id !== skill.id),
+                                          )
+                                        }
+                                      />
+                                      <IconBolt className="size-3.5" />
+                                      {skill.name}
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ) : baselineSkills.length > 0 ? (
+                            <p className="mt-4 text-sm text-gray-500">
+                              No additional optional skills are installed right now.
+                            </p>
+                          ) : null}
                         </div>
                       ) : (
                         <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50/60 px-4 py-4">
                           <p className="text-sm font-medium text-gray-700">No installed skills yet</p>
                           <p className="mt-1 text-sm text-gray-500">
-                            Create or install skills first, then come back to attach them to this agent.
+                            Create or install skills first, then come back to attach or baseline
+                            them for agents.
                           </p>
                           <button
                             type="button"
@@ -1896,16 +2890,44 @@ export function TaskShell() {
                     </button>
                   </div>
                   {selectedSkills.length > 0 ? (
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {selectedSkills.map((skill) => (
-                        <span
-                          key={skill.id}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600"
-                        >
-                          <IconBolt className="size-3 text-gray-400" />
-                          {skill.name}
-                        </span>
-                      ))}
+                    <div className="mt-3 space-y-4">
+                      {selectedBaselineSkills.length > 0 && (
+                        <div>
+                          <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                            Baseline
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {selectedBaselineSkills.map((skill) => (
+                              <span
+                                key={skill.id}
+                                className="inline-flex items-center gap-1.5 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-700"
+                              >
+                                <IconBolt className="size-3 text-indigo-500" />
+                                {skill.name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {selectedAdditionalSkills.length > 0 && (
+                        <div>
+                          <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                            Additional
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {selectedAdditionalSkills.map((skill) => (
+                              <span
+                                key={skill.id}
+                                className="inline-flex items-center gap-1.5 rounded-full border border-gray-200 bg-gray-50 px-3 py-1 text-xs font-medium text-gray-600"
+                              >
+                                <IconBolt className="size-3 text-gray-400" />
+                                {skill.name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <p className="mt-3 text-xs text-gray-400">No skills attached.</p>

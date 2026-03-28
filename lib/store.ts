@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { normalizeAdminSettings } from "@/lib/settings";
 import { slugifySkillName } from "@/lib/skills";
 import type { Agent, AppStore, Task } from "@/lib/types";
 
@@ -13,6 +14,7 @@ const EMPTY_STORE: AppStore = {
   contextSets: [],
   skills: [],
   tasks: [],
+  settings: normalizeAdminSettings(),
 };
 
 type LegacyTask = Task & {
@@ -108,11 +110,14 @@ function normalizeStore(parsed: Partial<AppStore>) {
     } satisfies Task;
   });
 
+  const validSkillIds = new Set(skills.map((skill) => skill.id));
+
   return {
     agents,
     contextSets: parsed.contextSets ?? [],
     skills,
     tasks: normalizedTasks,
+    settings: normalizeAdminSettings(parsed.settings, { validSkillIds }),
   } satisfies AppStore;
 }
 

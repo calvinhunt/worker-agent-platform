@@ -139,7 +139,7 @@ export async function POST(
           message: "Reviewing the task, context files, and available skills.",
         });
 
-        const { task: existingTask, agent, contextSet, skills: selectedSkills } =
+        const { task: existingTask, agent, contextSet, skills: selectedSkills, settings } =
           await getTaskContext(taskId);
         const triage = await triageSandboxNeed({
           prompt,
@@ -166,6 +166,7 @@ export async function POST(
               taskId,
               agentId: agent.id,
               agentName: agent.name,
+              agentDefaults: readyState.settings.agentDefaults,
               sessionId: readyState.task.sessionId,
               containerId: readyState.task.containerId!,
               instructions: buildAgentInstructions(readyState.task, agent, contextSet, readyState.skills, {
@@ -271,6 +272,7 @@ export async function POST(
             taskId,
             agentId: agent.id,
             agentName: agent.name,
+            agentDefaults: settings.agentDefaults,
             sessionId: existingTask.sessionId,
             instructions: buildAgentInstructions(existingTask, agent, contextSet, selectedSkills, {
               useHostedShell: false,

@@ -32,9 +32,12 @@ export async function POST(request: Request) {
   }
 
   const store = await readStore();
-  const selectedSkills = store.skills.filter((skill) => selectedSkillIds.includes(skill.id));
+  const requestedAgentSkillIds = selectedSkillIds.filter(
+    (skillId) => !store.settings.baselineSkillIds.includes(skillId),
+  );
+  const selectedSkills = store.skills.filter((skill) => requestedAgentSkillIds.includes(skill.id));
 
-  if (selectedSkills.length !== selectedSkillIds.length) {
+  if (selectedSkills.length !== requestedAgentSkillIds.length) {
     return NextResponse.json({ error: "One or more selected skills were not found." }, { status: 404 });
   }
 

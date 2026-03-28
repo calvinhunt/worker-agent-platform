@@ -3,14 +3,16 @@ import {
   generateTraceId,
   OpenAIResponsesCompactionSession,
   OpenAIResponsesModel,
+  type ModelSettings,
   type RunStreamEvent,
   Runner,
   shellTool,
   withTrace,
 } from "@openai/agents";
 
-import { getDefaultModel, getOpenAIClient } from "@/lib/openai";
+import { getOpenAIClient } from "@/lib/openai";
 import { FileTaskSession } from "@/lib/task-session";
+import type { AdminAgentDefaults } from "@/lib/types";
 
 const sharedRunner = new Runner({
   tracingDisabled: false,
@@ -21,6 +23,7 @@ const sharedRunner = new Runner({
 type CreateRuntimeAgentInput = {
   agentName: string;
   instructions: string;
+  agentDefaults: AdminAgentDefaults;
   containerId?: string;
   useHostedShell: boolean;
 };
@@ -29,6 +32,7 @@ type StreamKnowledgeTaskInput = {
   taskId: string;
   agentId: string;
   agentName: string;
+  agentDefaults: AdminAgentDefaults;
   sessionId: string;
   containerId?: string;
   instructions: string;
@@ -37,6 +41,44 @@ type StreamKnowledgeTaskInput = {
   maxTurns?: number;
   onEvent?: (event: RunStreamEvent) => Promise<void> | void;
 };
+
+function buildModelSettings(
+  agentDefaults: AdminAgentDefaults,
+  options?: { useHostedShell: boolean },
+): ModelSettings {
+  const providerData: Record<string, unknown> = {};
+
+  if (agentDefaults.serviceTier) {
+    providerData.service_tier = agentDefaults.serviceTier;
+  }
+
+  if (agentDefaults.maxToolCalls) {
+    providerData.max_tool_calls = agentDefaults.maxToolCalls;
+  }
+
+  return {
+    temperature: agentDefaults.temperature ?? undefined,
+    topP: agentDefaults.topP ?? undefined,
+    truncation: agentDefaults.truncation ?? undefined,
+    maxTokens: agentDefaults.maxOutputTokens ?? undefined,
+    store: agentDefaults.store,
+    parallelToolCalls: options?.useHostedShell ? agentDefaults.parallelToolCalls : false,
+    promptCacheRetention: agentDefaults.promptCacheRetention ?? undefined,
+    reasoning:
+      agentDefaults.reasoningEffort || agentDefaults.reasoningSummary
+        ? {
+            effort: agentDefaults.reasoningEffort ?? undefined,
+            summary: agentDefaults.reasoningSummary ?? undefined,
+          }
+        : undefined,
+    text: agentDefaults.textVerbosity
+      ? {
+          verbosity: agentDefaults.textVerbosity,
+        }
+      : undefined,
+    providerData: Object.keys(providerData).length ? providerData : undefined,
+  };
+}
 
 function createRuntimeAgent(input: CreateRuntimeAgentInput) {
   const tools = input.useHostedShell
@@ -54,23 +96,17 @@ function createRuntimeAgent(input: CreateRuntimeAgentInput) {
     name: input.agentName,
     handoffDescription: "General-purpose knowledge agent for file-aware task execution.",
     instructions: input.instructions,
-    model: new OpenAIResponsesModel(getOpenAIClient(), getDefaultModel()),
-    modelSettings: {
-      parallelToolCalls: false,
-      store: true,
-      text: {
-        verbosity: "medium",
-      },
-    },
+    model: new OpenAIResponsesModel(getOpenAIClient(), input.agentDefaults.model),
+    modelSettings: buildModelSettings(input.agentDefaults, { useHostedShell: input.useHostedShell }),
     tools,
   });
 }
 
-export function createTaskSession(sessionId: string) {
+export function createTaskSession(sessionId: string, model: string) {
   return new OpenAIResponsesCompactionSession({
     client: getOpenAIClient(),
     underlyingSession: new FileTaskSession(sessionId),
-    model: getDefaultModel(),
+    model,
     compactionMode: "auto",
   });
 }
@@ -78,11 +114,12 @@ export function createTaskSession(sessionId: string) {
 export async function streamKnowledgeTask(input: StreamKnowledgeTaskInput) {
   const runtimeAgent = createRuntimeAgent({
     agentName: input.agentName,
+    agentDefaults: input.agentDefaults,
     instructions: input.instructions,
     containerId: input.containerId,
     useHostedShell: true,
   });
-  const session = createTaskSession(input.sessionId);
+  const session = createTaskSession(input.sessionId, input.agentDefaults.model);
 
   let finalOutput = "";
   let responseId: string | undefined;
@@ -96,7 +133,7 @@ export async function streamKnowledgeTask(input: StreamKnowledgeTaskInput) {
       const stream = await sharedRunner.run(runtimeAgent, input.prompt, {
         session,
         stream: true,
-        maxTurns: input.maxTurns ?? 16,
+        maxTurns: input.maxTurns ?? input.agentDefaults.maxTurns,
       });
 
       for await (const event of stream) {
@@ -137,10 +174,11 @@ export async function streamKnowledgeTaskWithoutSandbox(
 ) {
   const runtimeAgent = createRuntimeAgent({
     agentName: input.agentName,
+    agentDefaults: input.agentDefaults,
     instructions: input.instructions,
     useHostedShell: false,
   });
-  const session = createTaskSession(input.sessionId);
+  const session = createTaskSession(input.sessionId, input.agentDefaults.model);
 
   let finalOutput = "";
   let responseId: string | undefined;
@@ -154,7 +192,7 @@ export async function streamKnowledgeTaskWithoutSandbox(
       const stream = await sharedRunner.run(runtimeAgent, input.prompt, {
         session,
         stream: true,
-        maxTurns: input.maxTurns ?? 16,
+        maxTurns: input.maxTurns ?? input.agentDefaults.maxTurns,
       });
 
       for await (const event of stream) {

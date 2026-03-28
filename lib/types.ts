@@ -42,6 +42,45 @@ export type CuratedSkillCatalogEntry = {
   sourceUrl: string;
 };
 
+export type AdminContainerNetworkPolicy =
+  | {
+      type: "disabled";
+    }
+  | {
+      type: "allowlist";
+      allowedDomains: string[];
+    };
+
+export type AdminContainerDefaults = {
+  memoryLimit: "1g" | "4g" | "16g" | "64g" | null;
+  expiresAfterMinutes: number;
+  networkPolicy: AdminContainerNetworkPolicy;
+};
+
+export type AdminAgentDefaults = {
+  model: string;
+  maxTurns: number;
+  store: boolean;
+  parallelToolCalls: boolean;
+  temperature: number | null;
+  topP: number | null;
+  maxOutputTokens: number | null;
+  maxToolCalls: number | null;
+  serviceTier: "auto" | "default" | "flex" | "scale" | "priority" | null;
+  truncation: "auto" | "disabled" | null;
+  promptCacheRetention: "in-memory" | "24h" | null;
+  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | null;
+  reasoningSummary: "auto" | "concise" | "detailed" | null;
+  textVerbosity: "low" | "medium" | "high" | null;
+};
+
+export type AdminSettings = {
+  containerDefaults: AdminContainerDefaults;
+  agentDefaults: AdminAgentDefaults;
+  baselineSkillIds: string[];
+  updatedAt: string;
+};
+
 export type TaskMessage = {
   id: string;
   role: "user" | "assistant";
@@ -101,6 +140,7 @@ export type AppStore = {
   contextSets: ContextSet[];
   skills: SkillBundle[];
   tasks: Task[];
+  settings: AdminSettings;
 };
 
 export type ClientStatePayload = AppStore & {

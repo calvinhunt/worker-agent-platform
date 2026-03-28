@@ -8,6 +8,7 @@ import { toFile } from "openai";
 
 import { getSkillUploadables } from "@/lib/skills";
 import { getOpenAIClient } from "@/lib/openai";
+import { getEffectiveAgentSkillIds } from "@/lib/settings";
 import { readStore, writeStore } from "@/lib/store";
 import type {
   Agent,
@@ -59,7 +60,8 @@ export async function ensureTaskReady(
     throw new Error("Context set not found.");
   }
 
-  const skills = store.skills.filter((entry) => agent.skillIds.includes(entry.id));
+  const effectiveSkillIds = new Set(getEffectiveAgentSkillIds(agent, store.settings));
+  const skills = store.skills.filter((entry) => effectiveSkillIds.has(entry.id));
 
   if (contextSet.openaiFileIds.length !== contextSet.files.length) {
     const uploadedFileIds: string[] = [];
@@ -106,13 +108,24 @@ export async function ensureTaskReady(
   }
 
   if (!task.containerId) {
+    const containerDefaults = store.settings.containerDefaults;
     const createdContainer = await client.containers.create({
       name: task.name,
       expires_after: {
         anchor: "last_active_at",
-        minutes: 20,
+        minutes: containerDefaults.expiresAfterMinutes,
       },
       file_ids: contextSet.openaiFileIds,
+      memory_limit: containerDefaults.memoryLimit ?? undefined,
+      network_policy:
+        containerDefaults.networkPolicy.type === "allowlist"
+          ? {
+              type: "allowlist",
+              allowed_domains: containerDefaults.networkPolicy.allowedDomains,
+            }
+          : {
+              type: "disabled",
+            },
       skills: skills.flatMap((skill) =>
         skill.openaiSkillId
           ? [
@@ -137,6 +150,7 @@ export async function ensureTaskReady(
     task,
     contextSet,
     skills,
+    settings: store.settings,
     containerWasCreated: task.containerId !== existingContainerId,
     containerWasReset,
   };
@@ -160,13 +174,15 @@ export async function getTaskContext(taskId: string) {
     throw new Error("Context set not found.");
   }
 
-  const skills = store.skills.filter((entry) => agent.skillIds.includes(entry.id));
+  const effectiveSkillIds = new Set(getEffectiveAgentSkillIds(agent, store.settings));
+  const skills = store.skills.filter((entry) => effectiveSkillIds.has(entry.id));
 
   return {
     task,
     agent,
     contextSet,
     skills,
+    settings: store.settings,
   };
 }
 

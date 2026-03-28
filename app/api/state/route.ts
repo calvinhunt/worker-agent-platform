@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { getDefaultModel, hasOpenAIKey } from "@/lib/openai";
+import { hasOpenAIKey } from "@/lib/openai";
 import { readStore } from "@/lib/store";
 import { filterDownloadableArtifacts, syncTaskArtifacts } from "@/lib/tasks";
 
@@ -32,6 +32,6 @@ export async function GET() {
   return NextResponse.json({
     ...store,
     hasOpenAIKey: hasOpenAIKey(),
-    model: getDefaultModel(),
+    model: store.settings.agentDefaults.model,
   });
 }
