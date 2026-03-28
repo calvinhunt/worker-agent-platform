@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path";
 
 import { toFile, type Uploadable } from "openai/uploads";
+import type { Skill as OpenAISkill } from "openai/resources/skills/skills";
 
 import type {
   CuratedSkillCatalogEntry,
@@ -11,6 +12,7 @@ import type {
   SkillSource,
   StoredFile,
 } from "@/lib/types";
+import { getOpenAIClient } from "@/lib/openai";
 
 const SKILLS_ROOT_DIR = path.join(process.cwd(), "data", "skills");
 const CURATED_SKILLS_WEB_ROOT = "https://github.com/openai/skills/tree/main/skills/.curated";
@@ -249,6 +251,58 @@ function buildSkillUploadPath(skill: SkillBundle, relativePath: string) {
   return path.posix.join(uploadRoot, normalizedRelativePath);
 }
 
+async function createOpenAIDirectorySkill(skill: SkillBundle): Promise<OpenAISkill> {
+  const client = getOpenAIClient();
+  const files = skill.files.length ? skill.files : await collectSkillFiles(skill.diskPath);
+
+  if (!files.length) {
+    throw new Error(`Skill "${skill.name}" does not contain any files.`);
+  }
+
+  const form = new FormData();
+
+  await Promise.all(
+    files.map(async (file) => {
+      const uploadPath = buildSkillUploadPath(skill, file.relativePath);
+      const content = await readFile(file.diskPath);
+
+      form.append("files[]", new File([content], uploadPath));
+    }),
+  );
+
+  const response = await fetch(`${client.baseURL}/skills`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${client.apiKey}`,
+      ...(client.organization ? { "OpenAI-Organization": client.organization } : {}),
+      ...(client.project ? { "OpenAI-Project": client.project } : {}),
+    },
+    body: form,
+  });
+
+  if (!response.ok) {
+    let message = `OpenAI skill upload failed (${response.status})`;
+
+    try {
+      const payload = (await response.json()) as {
+        error?: {
+          message?: string;
+        };
+      };
+
+      if (payload.error?.message) {
+        message = payload.error.message;
+      }
+    } catch {
+      // Best effort only.
+    }
+
+    throw new Error(message);
+  }
+
+  return (await response.json()) as OpenAISkill;
+}
+
 export async function listCuratedSkills() {
   if (curatedCatalogCache && curatedCatalogCache.expiresAt > Date.now()) {
     return curatedCatalogCache.entries;
@@ -352,6 +406,17 @@ export async function getSkillUploadables(skill: SkillBundle): Promise<Uploadabl
       toFile(createReadStream(file.diskPath), buildSkillUploadPath(skill, file.relativePath)),
     ),
   );
+}
+
+export async function createOpenAISkill(skill: SkillBundle) {
+  if (skill.format === "directory") {
+    return createOpenAIDirectorySkill(skill);
+  }
+
+  const client = getOpenAIClient();
+  return client.skills.create({
+    files: await getSkillUploadables(skill),
+  });
 }
 
 export function getSkillStorageRoot(skill: SkillBundle) {

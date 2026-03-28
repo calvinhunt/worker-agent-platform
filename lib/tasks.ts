@@ -6,7 +6,7 @@ import path from "node:path";
 
 import { toFile } from "openai";
 
-import { getSkillUploadables } from "@/lib/skills";
+import { createOpenAISkill } from "@/lib/skills";
 import { getOpenAIClient } from "@/lib/openai";
 import { getEffectiveAgentSkillIds } from "@/lib/settings";
 import { readStore, writeStore } from "@/lib/store";
@@ -83,9 +83,7 @@ export async function ensureTaskReady(
       continue;
     }
 
-    const createdSkill = await client.skills.create({
-      files: await getSkillUploadables(skill),
-    });
+    const createdSkill = await createOpenAISkill(skill);
 
     skill.openaiSkillId = createdSkill.id;
     skill.defaultVersion = createdSkill.default_version;
