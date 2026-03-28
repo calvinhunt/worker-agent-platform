@@ -242,6 +242,13 @@ export function slugifySkillName(name: string) {
   );
 }
 
+function buildSkillUploadPath(skill: SkillBundle, relativePath: string) {
+  const uploadRoot = slugifySkillName(skill.slug || skill.name || "skill");
+  const normalizedRelativePath = relativePath.replaceAll("\\", "/").replace(/^\/+/, "");
+
+  return path.posix.join(uploadRoot, normalizedRelativePath);
+}
+
 export async function listCuratedSkills() {
   if (curatedCatalogCache && curatedCatalogCache.expiresAt > Date.now()) {
     return curatedCatalogCache.entries;
@@ -341,7 +348,9 @@ export async function getSkillUploadables(skill: SkillBundle): Promise<Uploadabl
   }
 
   return Promise.all(
-    files.map((file) => toFile(createReadStream(file.diskPath), file.relativePath)),
+    files.map((file) =>
+      toFile(createReadStream(file.diskPath), buildSkillUploadPath(skill, file.relativePath)),
+    ),
   );
 }
 
