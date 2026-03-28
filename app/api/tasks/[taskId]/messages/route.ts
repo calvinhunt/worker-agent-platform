@@ -147,12 +147,15 @@ export async function POST(
           agentInstructions: agent.instructions,
           contextSetName: contextSet.name,
         });
-        const shouldUseSandbox = triage.category === "sandbox";
+        const requiresHostedShell = selectedSkills.length > 0 || contextSet.files.length > 0;
+        const shouldUseSandbox = requiresHostedShell || triage.category === "sandbox";
 
         write({
           type: "work_summary",
           message: shouldUseSandbox
-            ? "Routing this task to hosted shell mode."
+            ? requiresHostedShell
+              ? "Routing this task to hosted shell mode because it has attached files or skills."
+              : "Routing this task to hosted shell mode."
             : "Handling this task in standard mode without hosted shell access.",
         });
 
