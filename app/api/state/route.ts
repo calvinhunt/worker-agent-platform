@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 
+import { runPeriodicMaintenance } from "@/lib/maintenance";
 import { hasOpenAIKey } from "@/lib/openai";
 import { readStore } from "@/lib/store";
 import { filterDownloadableArtifacts, syncTaskArtifacts } from "@/lib/tasks";
@@ -8,6 +9,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
+  try {
+    await runPeriodicMaintenance();
+  } catch {
+    // Best effort only. State should still load if maintenance fails.
+  }
+
   let store = await readStore();
   const tasksNeedingRecovery = store.tasks.filter(
     (task) =>
